@@ -1,0 +1,59 @@
+{
+  "trained_at": "2026-05-05T20:20:16.085692+00:00",
+  "training_samples": 10,
+  "augmented_samples": 90,
+  "feature_count": 20,
+  "feature_names": [
+    "has_enter",
+    "has_exit",
+    "has_filec",
+    "has_validation",
+    "has_error_handling",
+    "has_ecb",
+    "has_pnr",
+    "has_service",
+    "has_storage_get",
+    "has_storage_rel",
+    "has_timer",
+    "has_send",
+    "has_arithmetic",
+    "has_crusa",
+    "has_globz",
+    "var_count",
+    "branch_count",
+    "data_ops",
+    "line_count",
+    "label_count"
+  ],
+  "entry_types": [
+    "DATA_TRANSFORMATION",
+    "FILE_ACCESS",
+    "MESSAGE_HANDLING",
+    "MULTI_FILE_JOIN",
+    "PNR_PROCESSING",
+    "RECORD_CREATION",
+    "SERVICE_CALL",
+    "STORAGE_MANAGEMENT",
+    "TIMER_PROCESSING",
+    "VALIDATION"
+  ],
+  "risk_levels": [
+    "HIGH",
+    "LOW",
+    "MODERATE"
+  ],
+  "type_cv_accuracy": 1.0,
+  "risk_cv_accuracy": 1.0,
+  "type_feature_importances": {
+    "data_ops": 0.11690695257999148,
+    "line_count": 0.09927657324656998,
+    "branch_count": 0.07510259361834379,
+    "label_count": 0.07271383040510018,
+    "var_count": 0.06752189056176694,
+    "has_ecb": 0.059489768914113984,
+    "has_service": 0.05453254972597047,
+    "has_crusa": 0.051917602797896104,
+    "has_arithmetic": 0.0500330371418494,
+    "has_error_handling": 0.04991633824110248
+  }
+}
