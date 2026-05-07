@@ -368,6 +368,132 @@ ERRXIT   BACKC TRDR""",
                      "has_validation": False, "has_error_handling": True,
                      "has_ecb": False, "has_pnr": False, "has_service": False},
     },
+    # ── 13. Z PAGE Command Handler ──
+    {
+        "entry_text": """ZPAGE    CSECT
+* Z PAGE — Terminal paging operator command
+         USING *,R12
+         ENTER TRDR
+         L     R3,CE1CR0
+         CLC   0(4,R3),=C'PAGE'
+         BNE   PAGE_ERR
+         CLI   5(R3),C'F'
+         BE    PAGE_FWD
+         CLI   5(R3),C'B'
+         BE    PAGE_BWD
+         B     PAGE_HELP
+PAGE_FWD DS    0H
+         MVC   PAGE_RESP,=CL40'Z PAGE: SCROLLING FORWARD'
+         B     PAGE_SEND
+PAGE_BWD DS    0H
+         MVC   PAGE_RESP,=CL40'Z PAGE: SCROLLING BACKWARD'
+         B     PAGE_SEND
+PAGE_HELP DS   0H
+         MVC   PAGE_RESP,=CL40'Z PAGE: F=FWD B=BWD'
+PAGE_SEND DS   0H
+         SENDC TYPE=RESP,DATA=PAGE_RESP
+         EXITC TRDR
+PAGE_ERR DS    0H
+         MVI   ERR_CODE,C'P'
+         BACKC TRDR
+PAGE_RESP DS   CL40
+ERR_CODE  DS   CL4""",
+        "entry_type": "Z_PAGE_COMMAND",
+        "purpose": "Z PAGE terminal paging operator command",
+        "risk_level": "LOW",
+        "features": {"has_enter": True, "has_exit": True, "has_filec": False,
+                     "has_validation": True, "has_error_handling": True,
+                     "has_ecb": False, "has_pnr": False, "has_service": False},
+    },
+    # ── 14. Z D0DB Command Handler ──
+    {
+        "entry_text": """ZD0DB    CSECT
+* Z D0DB — Database operator command
+         USING *,R12
+         ENTER TRDR
+         L     R3,CE1CR0
+         CLC   0(4,R3),=C'D0DB'
+         BNE   DB_ERR
+         CLI   5(R3),C'S'
+         BE    DB_START
+         CLI   5(R3),C'P'
+         BE    DB_STOP
+         B     DB_HELP
+DB_START DS    0H
+         MVC   DB_RESP,=CL40'Z D0DB: DATABASE STARTED'
+         B     DB_SEND
+DB_STOP  DS    0H
+         MVC   DB_RESP,=CL40'Z D0DB: DATABASE STOPPED'
+         B     DB_SEND
+DB_HELP  DS    0H
+         MVC   DB_RESP,=CL40'Z D0DB: S=START P=STOP'
+DB_SEND  DS    0H
+         SENDC TYPE=RESP,DATA=DB_RESP
+         EXITC TRDR
+DB_ERR   DS    0H
+         MVI   ERR_CODE,C'D'
+         BACKC TRDR
+DB_RESP  DS    CL40
+ERR_CODE DS    CL4""",
+        "entry_type": "Z_D0DB_COMMAND",
+        "purpose": "Z D0DB database operator command",
+        "risk_level": "HIGH",
+        "features": {"has_enter": True, "has_exit": True, "has_filec": False,
+                     "has_validation": True, "has_error_handling": True,
+                     "has_ecb": False, "has_pnr": False, "has_service": False},
+    },
+    # ── 15. Z FILE Command Handler ──
+    {
+        "entry_text": """ZFILE    CSECT
+* Z FILE — File system operator command
+         USING *,R12
+         ENTER TRDR
+         L     R3,CE1CR0
+         CLC   0(4,R3),=C'FILE'
+         BNE   FILE_ERR
+         B     FILE_SEND
+FILE_SEND DS   0H
+         MVC   FILE_RESP,=CL40'Z FILE: FILE SYSTEM STATUS DISPLAY'
+         SENDC TYPE=RESP,DATA=FILE_RESP
+         EXITC TRDR
+FILE_ERR DS    0H
+         MVI   ERR_CODE,C'F'
+         BACKC TRDR
+FILE_RESP DS   CL40
+ERR_CODE  DS   CL4""",
+        "entry_type": "Z_FILE_COMMAND",
+        "purpose": "Z FILE file system operator command",
+        "risk_level": "LOW",
+        "features": {"has_enter": True, "has_exit": True, "has_filec": False,
+                     "has_validation": True, "has_error_handling": True,
+                     "has_ecb": False, "has_pnr": False, "has_service": False},
+    },
+    # ── 16. Z INET Command Handler ──
+    {
+        "entry_text": """ZINET    CSECT
+* Z INET — Internet Daemon operator command
+         USING *,R12
+         ENTER TRDR
+         L     R3,CE1CR0
+         CLC   0(4,R3),=C'INET'
+         BNE   INET_ERR
+         B     INET_SEND
+INET_SEND DS   0H
+         MVC   INET_RESP,=CL40'Z INET: SOCKET AND DAEMON STATUS'
+         SENDC TYPE=RESP,DATA=INET_RESP
+         EXITC TRDR
+INET_ERR DS    0H
+         MVI   ERR_CODE,C'I'
+         BACKC TRDR
+INET_RESP DS   CL40
+ERR_CODE  DS   CL4""",
+        "entry_type": "Z_INET_COMMAND",
+        "purpose": "Z INET internet daemon operator command",
+        "risk_level": "MODERATE",
+        "features": {"has_enter": True, "has_exit": True, "has_filec": False,
+                     "has_validation": True, "has_error_handling": True,
+                     "has_ecb": False, "has_pnr": False, "has_service": False},
+    },
 ]
 
 
@@ -396,7 +522,8 @@ ENTRY_TYPES = [
     "VALIDATION", "TIMER_PROCESSING", "MESSAGE_HANDLING", "STORAGE_MANAGEMENT",
     "DATA_TRANSFORMATION", "MULTI_FILE_JOIN", "GENERAL_PROCESSING",
     "Z_COMMAND_HANDLER", "Z_TPFDF_COMMAND", "Z_STAT_COMMAND",
-    "Z_DUMP_COMMAND", "REXX_RAVEN_EXEC",
+    "Z_DUMP_COMMAND", "REXX_RAVEN_EXEC", "Z_PAGE_COMMAND", "Z_D0DB_COMMAND",
+    "Z_FILE_COMMAND", "Z_INET_COMMAND"
 ]
 
 RISK_LEVELS = ["LOW", "MODERATE", "HIGH"]

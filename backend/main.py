@@ -4,7 +4,7 @@ STS Coder — FastAPI Backend Server  (v2.0 — Dual-Model LLM)
 Travelport Smart TPF System Coder API
 
 Models:
-  Qwen2.5-Coder  → IBM REXX, VAR, TDRV, TRD generation (ZTPF Z Command trained)
+  Qwen2.5-Coder  → IBM REXX, VAR, TDRV, TDR generation (ZTPF Z Command trained)
   Llama 3.3      → Engineering recommendations & risk narrative
   Reinforcement  → Coder outputs feed Advisor for cross-model refinement
 
@@ -12,7 +12,7 @@ Endpoints:
   POST /api/analyze            — Analyze TPF entry (static + LLM)
   POST /api/generate/var       — Generate VAR file (LLM-powered)
   POST /api/generate/tdrv      — Generate TDRV file (LLM-powered)
-  POST /api/generate/trd       — Generate TRD file (LLM-powered)
+  POST /api/generate/tdr       — Generate TDR file (LLM-powered)
   POST /api/generate/rexx      — Generate REXX/RAVEN exec (LLM-powered)
   POST /api/generate/full      — Full engineering pack (dual-model reinforcement)
   POST /api/predict            — ML-based entry classification
@@ -44,7 +44,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from parser.tpf_parser import parse_tpf_entry
 from generators.var_generator import generate_var_file
 from generators.tdrv_generator import generate_tdrv_file
-from generators.trd_generator import generate_trd_file
+from generators.tdr_generator import generate_tdr_file
 from analyzer.entry_analyzer import generate_analysis, generate_recommendations
 from llm import (
     is_ollama_available,
@@ -52,7 +52,7 @@ from llm import (
     run_full_pipeline_llm,
     generate_var_llm,
     generate_tdrv_llm,
-    generate_trd_llm,
+    generate_tdr_llm,
     generate_rexx_llm,
     generate_recommendations_llm,
     analyze_entry_llm,
@@ -70,7 +70,7 @@ app = FastAPI(
     title="STS Coder API",
     description=(
         "Travelport Smart TPF System Coder — IBM z/TPF Engineering Copilot.\n\n"
-        "**Qwen2.5-Coder** handles IBM REXX, VAR, TDRV, TRD generation.\n"
+        "**Qwen2.5-Coder** handles IBM REXX, VAR, TDRV, TDR generation.\n"
         "**Llama 3.3** provides engineering recommendations.\n"
         "Reinforcement feedback loop: coder outputs inform advisor analysis."
     ),
@@ -94,7 +94,7 @@ class TPFEntryRequest(BaseModel):
     raw_text: str = Field(..., min_length=1, description="Raw TPF assembly / REXX / description text")
     entry_name: str = Field("", description="Optional entry name override")
     segment: str = Field("", description="Optional segment name")
-    mode: str = Field("FULL", description="Output mode: ANALYZE, VAR, TDRV, TRD, REXX, FULL")
+    mode: str = Field("FULL", description="Output mode: ANALYZE, VAR, TDRV, TDR, REXX, FULL")
     use_llm: bool = Field(True, description="Use Ollama LLM (falls back to static if unavailable)")
 
 
@@ -116,6 +116,7 @@ class AnalysisResponse(BaseModel):
     ml_prediction: dict | None = None
     llm_analysis: dict | None = None
     llm_mode: str = "static"
+    chat_response: str = ""
     timestamp: str
 
 
@@ -124,6 +125,7 @@ class GenerateResponse(BaseModel):
     file_type: str
     entry_name: str
     llm_mode: str = "static"
+    chat_response: str = ""
     timestamp: str
 
 
@@ -132,7 +134,7 @@ class FullPackResponse(BaseModel):
     recommendations: list[dict]
     var_file: str
     tdrv_file: str
-    trd_file: str
+    tdr_file: str
     rexx_exec: str | None = None
     ml_prediction: dict | None = None
     llm_analysis: dict | None = None
@@ -140,6 +142,7 @@ class FullPackResponse(BaseModel):
     coder_model: str
     advisor_model: str
     llm_errors: list[str] = []
+    chat_response: str = ""
     timestamp: str
 
 
@@ -328,9 +331,9 @@ def gen_tdrv(req: TPFEntryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/generate/trd", response_model=GenerateResponse)
-def gen_trd(req: TPFEntryRequest):
-    """Generate TRD file — Qwen2.5-Coder (LLM) or static fallback."""
+@app.post("/api/generate/tdr", response_model=GenerateResponse)
+def gen_tdr(req: TPFEntryRequest):
+    """Generate TDR file — Qwen2.5-Coder (LLM) or static fallback."""
     try:
         parsed = parse_tpf_entry(req.raw_text, req.entry_name, req.segment)
         llm_mode = "static"
@@ -338,17 +341,17 @@ def gen_trd(req: TPFEntryRequest):
 
         if req.use_llm and is_ollama_available():
             try:
-                output = generate_trd_llm(_parsed_to_summary(parsed))
+                output = generate_tdr_llm(_parsed_to_summary(parsed))
                 llm_mode = f"qwen2.5-coder"
             except Exception as e:
-                log.warning(f"LLM TRD failed: {e}")
+                log.warning(f"LLM TDR failed: {e}")
 
         if not output:
-            output = generate_trd_file(parsed)
+            output = generate_tdr_file(parsed)
 
         return GenerateResponse(
             output=output,
-            file_type="TRD",
+            file_type="TDR",
             entry_name=parsed.name,
             llm_mode=llm_mode,
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -399,6 +402,33 @@ def explain_zcmd(req: TPFEntryRequest):
             file_type="ZCMD",
             entry_name="Z_CMD",
             llm_mode=f"qwen2.5-coder",
+            chat_response="I have analyzed your Z-Command. Please review the explanation in the Z-CMD tab.",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/chat", response_model=GenerateResponse)
+def chat_only(req: TPFEntryRequest):
+    """General ZTPF conversational endpoint."""
+    try:
+        if not is_ollama_available():
+            raise HTTPException(status_code=503, detail="Ollama not available.")
+        
+        # We can reuse the explain_z_command_llm logic but tweak the prompt, 
+        # or just pass it as a general question to the Coder model.
+        # For simplicity, we use explain_z_command_llm as it has the knowledge base.
+        output = explain_z_command_llm(req.raw_text.strip())
+        
+        return GenerateResponse(
+            output=output,
+            file_type="CHAT",
+            entry_name="CHAT",
+            llm_mode=f"qwen2.5-coder",
+            chat_response=output, # The output itself is the chat response
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
     except HTTPException:
@@ -411,7 +441,7 @@ def explain_zcmd(req: TPFEntryRequest):
 def gen_full(req: TPFEntryRequest):
     """
     Full Engineering Pack — dual-model reinforcement pipeline.
-    Phase 1 (Qwen2.5-Coder): Analyze → VAR → TDRV → TRD → REXX
+    Phase 1 (Qwen2.5-Coder): Analyze → VAR → TDRV → TDR → REXX
     Phase 2 (Llama 3.3):     Recommendations using ALL Phase 1 outputs
     """
     try:
@@ -429,12 +459,19 @@ def gen_full(req: TPFEntryRequest):
             if llm_result.get("analysis"):
                 merged_analysis["llm_classification"] = llm_result["analysis"]
 
+            chat_reply = f"I have successfully generated the Full Pack documentation using {llm_result['coder_model']}. "
+            rec_count = len(llm_result["recommendations"] or static_recs)
+            if rec_count > 0:
+                chat_reply += f"The Advisor ({llm_result['advisor_model']}) has reviewed the code and identified {rec_count} recommendations. Please check the output tabs."
+            else:
+                chat_reply += "No major risks were found by the Advisor. Please review the output tabs."
+
             return FullPackResponse(
                 analysis=merged_analysis,
                 recommendations=llm_result["recommendations"] or static_recs,
                 var_file=llm_result["var_file"] or generate_var_file(parsed),
                 tdrv_file=llm_result["tdrv_file"] or generate_tdrv_file(parsed),
-                trd_file=llm_result["trd_file"] or generate_trd_file(parsed),
+                tdr_file=llm_result["tdr_file"] or generate_tdr_file(parsed),
                 rexx_exec=llm_result.get("rexx_exec"),
                 ml_prediction=ml,
                 llm_analysis=llm_result.get("analysis"),
@@ -442,6 +479,7 @@ def gen_full(req: TPFEntryRequest):
                 coder_model=llm_result["coder_model"],
                 advisor_model=llm_result["advisor_model"],
                 llm_errors=llm_result.get("errors", []),
+                chat_response=chat_reply,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
         else:
@@ -451,7 +489,7 @@ def gen_full(req: TPFEntryRequest):
                 recommendations=static_recs,
                 var_file=generate_var_file(parsed),
                 tdrv_file=generate_tdrv_file(parsed),
-                trd_file=generate_trd_file(parsed),
+                tdr_file=generate_tdr_file(parsed),
                 rexx_exec=None,
                 ml_prediction=ml,
                 llm_analysis=None,

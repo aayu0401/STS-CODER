@@ -1,8 +1,8 @@
 {
-  "trained_at": "2026-05-05T20:20:16.085692+00:00",
-  "training_samples": 10,
-  "augmented_samples": 90,
-  "feature_count": 20,
+  "trained_at": "2026-05-07T00:54:52.995252+00:00",
+  "training_samples": 16,
+  "augmented_samples": 144,
+  "feature_count": 22,
   "feature_names": [
     "has_enter",
     "has_exit",
@@ -19,6 +19,8 @@
     "has_arithmetic",
     "has_crusa",
     "has_globz",
+    "has_z_command",
+    "has_rexx",
     "var_count",
     "branch_count",
     "data_ops",
@@ -26,34 +28,40 @@
     "label_count"
   ],
   "entry_types": [
-    "DATA_TRANSFORMATION",
     "FILE_ACCESS",
-    "MESSAGE_HANDLING",
     "MULTI_FILE_JOIN",
     "PNR_PROCESSING",
     "RECORD_CREATION",
+    "REXX_RAVEN_EXEC",
     "SERVICE_CALL",
     "STORAGE_MANAGEMENT",
-    "TIMER_PROCESSING",
-    "VALIDATION"
+    "VALIDATION",
+    "Z_COMMAND_HANDLER",
+    "Z_D0DB_COMMAND",
+    "Z_DUMP_COMMAND",
+    "Z_FILE_COMMAND",
+    "Z_INET_COMMAND",
+    "Z_PAGE_COMMAND",
+    "Z_STAT_COMMAND",
+    "Z_TPFDF_COMMAND"
   ],
   "risk_levels": [
     "HIGH",
     "LOW",
     "MODERATE"
   ],
-  "type_cv_accuracy": 1.0,
-  "risk_cv_accuracy": 1.0,
+  "type_cv_accuracy": 0.8472222222222222,
+  "risk_cv_accuracy": 0.8541666666666666,
   "type_feature_importances": {
-    "data_ops": 0.11690695257999148,
-    "line_count": 0.09927657324656998,
-    "branch_count": 0.07510259361834379,
-    "label_count": 0.07271383040510018,
-    "var_count": 0.06752189056176694,
-    "has_ecb": 0.059489768914113984,
-    "has_service": 0.05453254972597047,
-    "has_crusa": 0.051917602797896104,
-    "has_arithmetic": 0.0500330371418494,
-    "has_error_handling": 0.04991633824110248
+    "line_count": 0.12183992359283963,
+    "data_ops": 0.12067508749777084,
+    "label_count": 0.1130147346250142,
+    "var_count": 0.10322359929916097,
+    "branch_count": 0.08216809867047992,
+    "has_ecb": 0.04927266043321085,
+    "has_filec": 0.04532347728910468,
+    "has_z_command": 0.04464151078306984,
+    "has_storage_rel": 0.03690061751133014,
+    "has_pnr": 0.03555859508242374
   }
 }

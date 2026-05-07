@@ -12,6 +12,7 @@
   const uploadZone    = $('#upload-zone');
   const btnGenerate   = $('#btn-generate');
   const btnClear      = $('#btn-clear-input');
+  const chatHistory   = $('#chat-history');
   const btnCopy       = $('#btn-copy');
   const btnDownload   = $('#btn-download');
   const entryName     = $('#entry-name');
@@ -35,11 +36,13 @@
       btn.classList.add('active'); btn.setAttribute('aria-checked','true');
       mode = btn.dataset.mode;
       
-      // Update button text based on mode
+      // Update button title based on mode
       if (mode === 'ZCMD') {
-        btnGenerate.innerHTML = 'Explain Z-Command';
+        btnGenerate.title = 'Explain Z-Command';
+      } else if (mode === 'CHAT') {
+        btnGenerate.title = 'Send Chat Message';
       } else {
-        btnGenerate.innerHTML = 'Generate Documentation';
+        btnGenerate.title = 'Generate Documentation';
       }
     });
   });
@@ -71,11 +74,26 @@
 
   // ── Textarea ──
   textarea.addEventListener('input', () => charCount.textContent = textarea.value.length + ' chars');
+  textarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      btnGenerate.click();
+    }
+  });
 
   // ── Clear ──
   btnClear.addEventListener('click', () => {
     textarea.value = ''; entryName.value = ''; 
     charCount.textContent = '0 chars'; lastResult = null;
+    chatHistory.innerHTML = `<div class="chat-message ai">
+      <div class="msg-avatar">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 12 2.1 12"/><path d="M12 12l8.6 5"/></svg>
+      </div>
+      <div class="msg-content">
+        <p>Hello! I am your <strong>STS Copilot</strong>.</p>
+        <p>Paste your IBM z/TPF assembly, REXX exec, or Z Command below. I will work with the Advisor to generate your VAR/TDR documentation and check for risks.</p>
+      </div>
+    </div>`;
     resetOutput(); llmBadge.classList.add('hidden');
   });
 
@@ -97,7 +115,26 @@
   // ── Generate ──
   btnGenerate.addEventListener('click', () => {
     const raw = textarea.value.trim();
-    if (!raw) { showToast('Please enter an entry, description, or Z command.'); return; }
+    if (!raw) { showToast('Please enter a message or paste code.'); return; }
+    
+    // Validator: entry name must be exactly 5 characters
+    const ename = entryName.value.trim();
+    if (ename.length > 0 && ename.length !== 5) {
+      showToast('ZTPF entry must be exactly 5 characters.');
+      return;
+    }
+    
+    // Append User Message to Chat
+    const userMsg = document.createElement('div');
+    userMsg.className = 'chat-message user';
+    userMsg.innerHTML = `<div class="msg-avatar"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
+    <div class="msg-content">${esc(raw)}</div>`;
+    chatHistory.appendChild(userMsg);
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+
+    textarea.value = '';
+    charCount.textContent = '0 chars';
+
     runGeneration(raw);
   });
 
@@ -176,13 +213,14 @@
 
   // ── Steps per mode ──
   const STEPS = {
-    FULL:    ['Connecting to STS Coder API…', 'AI Engine: Analysing entry…', 'AI Engine: Generating VAR…', 'AI Engine: Generating TDRV…', 'AI Engine: Generating TRD + REXX…', 'AI Advisor: Engineering recommendations…', 'Finalising…'],
+    FULL:    ['Connecting to STS Coder API…', 'AI Engine: Analysing entry…', 'AI Engine: Generating VAR…', 'AI Engine: Generating TDRV…', 'AI Engine: Generating TDR + REXX…', 'AI Advisor: Engineering recommendations…', 'Finalising…'],
     ANALYZE: ['Connecting…', 'Parsing entry…', 'AI Engine: Classifying…', 'AI Advisor: Recommending…', 'Done.'],
     VAR:     ['Connecting…', 'Parsing entry…', 'AI Engine: VAR generation…', 'Done.'],
     TDRV:    ['Connecting…', 'Parsing entry…', 'AI Engine: TDRV generation…', 'Done.'],
-    TRD:     ['Connecting…', 'Parsing entry…', 'AI Engine: TRD generation…', 'Done.'],
+    TDR:     ['Connecting…', 'Parsing entry…', 'AI Engine: TDR generation…', 'Done.'],
     REXX:    ['Connecting…', 'Parsing entry…', 'AI Engine: REXX/RAVEN generation…', 'Done.'],
     ZCMD:    ['Connecting…', 'AI Engine: Analyzing Z Command…', 'Generating explanation…', 'Done.'],
+    CHAT:    ['Connecting…', 'AI Copilot: Thinking…', 'Typing response…', 'Done.'],
   };
 
   async function runGeneration(raw) {
@@ -207,9 +245,10 @@
         mode === 'ANALYZE' ? '/api/analyze'
         : mode === 'VAR'   ? '/api/generate/var'
         : mode === 'TDRV'  ? '/api/generate/tdrv'
-        : mode === 'TRD'   ? '/api/generate/trd'
+        : mode === 'TDR'   ? '/api/generate/tdr'
         : mode === 'REXX'  ? '/api/generate/rexx'
         : mode === 'ZCMD'  ? '/api/explain'
+        : mode === 'CHAT'  ? '/api/chat'
         : '/api/generate/full';
 
       const resp = await fetch(API + endpoint, {
@@ -244,7 +283,7 @@
       mode === 'ANALYZE' ? 'analysis'
       : mode === 'VAR'   ? 'var'
       : mode === 'TDRV'  ? 'tdrv'
-      : mode === 'TRD'   ? 'trd'
+      : mode === 'TDR'   ? 'tdr'
       : mode === 'REXX'  ? 'rexx'
       : mode === 'ZCMD'  ? 'zcmd'
       : 'analysis'
@@ -252,10 +291,45 @@
 
     btnCopy.disabled = false; btnDownload.disabled = false; btnGenerate.disabled = false;
     showToast(apiResult ? '✓ Generated successfully.' : '⚠ Generated locally (API offline).');
+
+    // Append AI Response to Chat
+    const aiMsg = document.createElement('div');
+    aiMsg.className = 'chat-message ai';
+    let aiText = '';
+    
+    if (apiResult && apiResult.chat_response) {
+      // Use the actual chat response from the backend!
+      aiText = apiResult.chat_response;
+    } else {
+      if (mode === 'ZCMD') {
+        aiText = 'I have analyzed the Z Command. Please see the <strong>Z-CMD</strong> tab for the explanation.';
+      } else if (mode === 'CHAT') {
+        aiText = apiResult ? esc(apiResult.output) : 'I am currently offline. Please try again later.';
+      } else {
+        aiText = `I have generated the requested documentation in <strong>${mode}</strong> mode. `;
+        if (apiResult && apiResult.recommendations && apiResult.recommendations.length > 0) {
+          aiText += `The Advisor has reviewed the code and identified <strong>${apiResult.recommendations.length} recommendations</strong>. `;
+        }
+        aiText += 'Please check the tabs on the right.';
+      }
+    }
+    
+    aiMsg.innerHTML = `<div class="msg-avatar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 12 2.1 12"/><path d="M12 12l8.6 5"/></svg></div>
+    <div class="msg-content"><p>${aiText.replace(/\\n/g, '<br/>')}</p></div>`;
+    chatHistory.appendChild(aiMsg);
+    chatHistory.scrollTop = chatHistory.scrollHeight;
   }
 
   // ── API Renderer ──
   function renderFromAPI(d) {
+    if (mode === 'CHAT' || d.file_type === 'CHAT') {
+       // Just chat, we can optionally switch to a generic tab or stay on analysis
+       if (d.output) {
+         $('#result-analysis').innerHTML = '<div class="result-section"><div class="result-section-title">Copilot Conversation</div><div class="zcmd-block"><pre>' + esc(d.output) + '</pre></div></div>';
+       }
+       return;
+    }
+
     if (mode === 'ZCMD' || d.file_type === 'ZCMD') {
       $('#result-zcmd').innerHTML = '<div class="result-section"><div class="result-section-title">ZTPF Z Command Explanation</div><div class="zcmd-block"><pre>' + esc(d.output) + '</pre></div></div>';
       return;
@@ -297,12 +371,12 @@
 
     const varText  = d.var_file  || (d.output && d.file_type==='VAR'  ? d.output : '');
     const tdrvText = d.tdrv_file || (d.output && d.file_type==='TDRV' ? d.output : '');
-    const trdText  = d.trd_file  || (d.output && d.file_type==='TRD'  ? d.output : '');
+    const tdrText  = d.tdr_file  || (d.output && d.file_type==='TDR'  ? d.output : '');
     const rexxText = d.rexx_exec || (d.output && d.file_type==='REXX' ? d.output : '');
 
     if (varText)  $('#result-var').innerHTML  = section('VAR File',  varText);
     if (tdrvText) $('#result-tdrv').innerHTML = section('TDRV File', tdrvText);
-    if (trdText)  $('#result-trd').innerHTML  = section('TRD File',  trdText);
+    if (tdrText)  $('#result-tdr').innerHTML  = section('TDR File',  tdrText);
     if (rexxText) {
       $('#result-rexx').innerHTML = '<div class="result-section"><div class="result-section-title">REXX / RAVEN Exec — AI Engine</div><pre class="rexx-block">' + esc(rexxText) + '</pre></div>';
     }
@@ -396,12 +470,12 @@
     tOut += '─'.repeat(70);
     $('#result-tdrv').innerHTML = section('TDRV File (Local)', tOut);
 
-    let rOut = '═'.repeat(70) + '\n  TRD FILE — ' + p.name + '\n' + '═'.repeat(70) + '\n\n';
-    rOut += 'TRD NAME:    ' + p.name + ' — ' + p.purpose + '\nENTRY:       ' + p.name + '\nSEGMENT:     ' + p.segment + '\n\n';
+    let rOut = '═'.repeat(70) + '\n  TDR FILE — ' + p.name + '\n' + '═'.repeat(70) + '\n\n';
+    rOut += 'TDR NAME:    ' + p.name + ' — ' + p.purpose + '\nENTRY:       ' + p.name + '\nSEGMENT:     ' + p.segment + '\n\n';
     rOut += 'PURPOSE:\n  ' + p.purpose + '\n\nINPUT:\n' + p.inputs.map(i=>'  - '+i).join('\n') + '\n\nOUTPUT:\n' + p.outputs.map(o=>'  - '+o).join('\n');
     rOut += '\n\nDEPENDENCIES:\n' + (p.macros.length ? p.macros.map(m=>'  - '+m).join('\n') : '  UNKNOWN') + '\n\nEXCEPTIONS:\n' + (p.errors.length ? p.errors.slice(0,5).map(e=>'  - '+e.slice(0,60)).join('\n') : '  UNKNOWN');
     rOut += '\n\nZ COMMANDS:\n  Validate applicable Z ENTRY / Z TPFDF commands against this entry.\n\nREXX INTERFACE:\n  Assess RAVEN exec integration requirements.';
-    $('#result-trd').innerHTML = section('TRD File (Local)', rOut);
+    $('#result-tdr').innerHTML = section('TDR File (Local)', rOut);
 
     const rexxOut = `/* IBM z/TPF REXX RAVEN Exec — ${p.name} */\n/* Purpose: ${p.purpose} */\nADDRESS RAVEN\n\nPARSE ARG entry_input\n\nIF entry_input = '' THEN DO\n  SAY 'ERR: No input provided'\n  EXIT 8\nEND\n\n/* TODO: Implement ${p.name} logic */\n/* Macros used: ${p.macros.join(', ')||'NONE'} */\n\nSAY 'OK: ${p.name} processing complete'\nEXIT 0`;
     $('#result-rexx').innerHTML = '<div class="result-section"><div class="result-section-title">REXX / RAVEN Exec (Local Template)</div><pre class="rexx-block">' + esc(rexxOut) + '</pre></div>';
