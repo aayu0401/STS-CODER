@@ -2,14 +2,13 @@
 (function () {
   'use strict';
 
-  const API = 'http://localhost:8100';
+  const API = 'http://127.0.0.1:8100';
   const $ = (s) => document.querySelector(s);
 
   // DOM refs
   const textarea      = $('#entry-input');
   const charCount     = $('#char-count');
   const fileInput     = $('#file-input');
-  const uploadZone    = $('#upload-zone');
   const btnGenerate   = $('#btn-generate');
   const btnClear      = $('#btn-clear-input');
   const chatHistory   = $('#chat-history');
@@ -59,11 +58,6 @@
   });
 
   // ── Upload ──
-  uploadZone.addEventListener('click', () => fileInput.click());
-  uploadZone.addEventListener('keydown', e => { if (e.key==='Enter'||e.key===' ') fileInput.click(); });
-  uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
-  uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
-  uploadZone.addEventListener('drop', e => { e.preventDefault(); uploadZone.classList.remove('drag-over'); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
   fileInput.addEventListener('change', () => { if (fileInput.files[0]) readFile(fileInput.files[0]); });
 
   function readFile(f) {
@@ -224,10 +218,65 @@
   };
 
   async function runGeneration(raw) {
+    const useLLM = llmToggle ? llmToggle.checked : true;
+
+    // ── Streaming path for ZCMD and CHAT ──
+    if (mode === 'ZCMD' || mode === 'CHAT') {
+      btnGenerate.disabled = true;
+      hideAll(); // hide placeholder / processing
+
+      const streamEndpoint = mode === 'ZCMD'
+        ? `${API}/api/stream/zcmd?command=${encodeURIComponent(raw)}`
+        : `${API}/api/stream/chat?query=${encodeURIComponent(raw)}`;
+
+      // Create typing bubble immediately
+      const streamBubble = document.createElement('div');
+      streamBubble.className = 'chat-message ai';
+      streamBubble.innerHTML = `<div class="msg-avatar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 12 2.1 12"/><path d="M12 12l8.6 5"/></svg></div><div class="msg-content stream-content"><span class="cursor-blink">|</span></div>`;
+      chatHistory.appendChild(streamBubble);
+      chatHistory.scrollTop = chatHistory.scrollHeight;
+      const contentEl = streamBubble.querySelector('.stream-content');
+      let accumulated = '';
+
+      const evtSource = new EventSource(streamEndpoint);
+      evtSource.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.token) {
+            accumulated += data.token;
+            contentEl.innerHTML = accumulated
+              .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+              .replace(/\n/g, '<br>') + '<span class="cursor-blink">|</span>';
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+          }
+          if (data.done) {
+            evtSource.close();
+            contentEl.innerHTML = (accumulated || 'No response received.')
+              .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+              .replace(/\n/g, '<br>');
+            btnGenerate.disabled = false;
+            showToast('\u2713 Done.');
+          }
+        } catch(err) { /* ignore parse errors */ }
+      };
+      evtSource.onerror = () => {
+        evtSource.close();
+        if (!accumulated) {
+          contentEl.innerHTML = '\u26a0 Could not reach AI server. Check Ollama is running at localhost:11434.';
+        } else {
+          contentEl.innerHTML = accumulated
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\n/g, '<br>');
+        }
+        btnGenerate.disabled = false;
+      };
+      return; // done — no blocking fetch needed
+    }
+
+    // ── Blocking path for all other modes ──
     hideAll();
     processing.classList.remove('hidden');
     btnGenerate.disabled = true;
-    const useLLM = llmToggle.checked;
 
     const steps = STEPS[mode] || STEPS.FULL;
     for (let i = 0; i < steps.length; i++) {
@@ -240,17 +289,15 @@
     }
 
     let apiResult = null;
-    try {
-      const endpoint =
-        mode === 'ANALYZE' ? '/api/analyze'
-        : mode === 'VAR'   ? '/api/generate/var'
-        : mode === 'TDRV'  ? '/api/generate/tdrv'
-        : mode === 'TDR'   ? '/api/generate/tdr'
-        : mode === 'REXX'  ? '/api/generate/rexx'
-        : mode === 'ZCMD'  ? '/api/explain'
-        : mode === 'CHAT'  ? '/api/chat'
-        : '/api/generate/full';
+    const endpoint =
+      mode === 'ANALYZE' ? '/api/analyze'
+      : mode === 'VAR'   ? '/api/generate/var'
+      : mode === 'TDRV'  ? '/api/generate/tdrv'
+      : mode === 'TDR'   ? '/api/generate/tdr'
+      : mode === 'REXX'  ? '/api/generate/rexx'
+      : '/api/generate/full';
 
+    try {
       const resp = await fetch(API + endpoint, {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
@@ -297,25 +344,25 @@
     aiMsg.className = 'chat-message ai';
     let aiText = '';
     
-    if (apiResult && apiResult.chat_response) {
-      // Use the actual chat response from the backend!
+    if (apiResult && (mode === 'ZCMD' || mode === 'CHAT')) {
+      // Render full response directly in chat bubble
+      const raw = apiResult.chat_response || apiResult.output || '';
+      aiText = raw
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\n•/g, '<br>•')
+        .replace(/\n/g, '<br>');
+    } else if (apiResult && apiResult.chat_response) {
       aiText = apiResult.chat_response;
     } else {
-      if (mode === 'ZCMD') {
-        aiText = 'I have analyzed the Z Command. Please see the <strong>Z-CMD</strong> tab for the explanation.';
-      } else if (mode === 'CHAT') {
-        aiText = apiResult ? esc(apiResult.output) : 'I am currently offline. Please try again later.';
-      } else {
-        aiText = `I have generated the requested documentation in <strong>${mode}</strong> mode. `;
-        if (apiResult && apiResult.recommendations && apiResult.recommendations.length > 0) {
-          aiText += `The Advisor has reviewed the code and identified <strong>${apiResult.recommendations.length} recommendations</strong>. `;
-        }
-        aiText += 'Please check the tabs on the right.';
+      aiText = `Documentation generated in <strong>${mode}</strong> mode. `;
+      if (apiResult && apiResult.recommendations && apiResult.recommendations.length > 0) {
+        aiText += `The Advisor found <strong>${apiResult.recommendations.length} recommendations</strong>. `;
       }
+      aiText += 'Check the output tabs on the right.';
     }
     
     aiMsg.innerHTML = `<div class="msg-avatar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 12 2.1 12"/><path d="M12 12l8.6 5"/></svg></div>
-    <div class="msg-content"><p>${aiText.replace(/\\n/g, '<br/>')}</p></div>`;
+    <div class="msg-content">${aiText || 'Response complete. Check the output tabs.'}</div>`;
     chatHistory.appendChild(aiMsg);
     chatHistory.scrollTop = chatHistory.scrollHeight;
   }

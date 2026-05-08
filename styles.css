@@ -558,3 +558,8 @@ body {
   flex-wrap: wrap;
   overflow: visible;
 }
+
+/* Streaming cursor */
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+.cursor-blink { animation: blink 0.8s infinite; color: #2563eb; font-weight: bold; }
+.chat-message.streaming .msg-content { min-height: 24px; }

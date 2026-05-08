@@ -13,85 +13,48 @@ import json
 import logging
 import httpx
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
 from .tpf_knowledge import KNOWLEDGE
 
 log = logging.getLogger("sts.llm")
 
-OLLAMA_BASE = "http://localhost:11434"
-CODER_MODEL  = "qwen2.5-coder:1.5b"   # IBM REXX / VAR / TDRV / TDR
-ADVISOR_MODEL = "llama3.2"        # Recommendations / risk narrative
+OLLAMA_BASE   = "http://localhost:11434"
+CODER_MODEL   = "qwen2.5-coder:1.5b"   # IBM REXX / VAR / TDRV / TDR
+ADVISOR_MODEL = "llama3.2"              # Recommendations / risk narrative
 
-TIMEOUT = 120  # seconds
+TIMEOUT       = 150   # seconds per request
+FAST_TOKENS   = 256   # Z-CMD / Chat  — short, precise
+FULL_TOKENS   = 768   # VAR / TDRV / TDR / REXX — structured docs
+ANALYSIS_TOKENS = 256 # JSON analysis
 
 # ─────────────────────────────────────────────
 # Z/TPF ZTPF SYSTEM PROMPT — Qwen2.5-Coder
 # Trained on Z Command Entries and ZTPF patterns
 # ─────────────────────────────────────────────
 
-CODER_SYSTEM = f"""\
-You are STS Coder, an expert IBM z/TPF (Transaction Processing Facility) \
-system programmer and REXX / Raven coding specialist trained on IBM z/TPF \
-Z Command entries, ZTPF macro libraries, and Travelport STS engineering standards.
-
-## IBM z/TPF and REXX Knowledge Base
-The following knowledge rules and conventions MUST be strictly applied:
-{json.dumps(KNOWLEDGE, indent=2)}
+CODER_SYSTEM = """\
+You are STS Coder, an expert IBM z/TPF system programmer and REXX/Raven specialist.
 
 ## Domain Knowledge
-### IBM z/TPF Assembly & REXX
-- TPF entries use System/390 BAL (Basic Assembly Language) with IBM z/TPF macros.
-- Key macros: ENTER/EXITC/EXITN/BACKC — entry lifecycle
-- File macros: FILEC, FILEM, FINDA, FINDC — ECB-safe file access
-- Record macros: CRUSA, CRUSC — record create/update
-- Storage: GETCC, RELCC, GLOBZ — TPF storage management
+- TPF entries use System/390 BAL with IBM z/TPF macros.
+- Key macros: ENTER/EXITC/EXITN/BACKC (lifecycle), FILEC/FILEM/FINDA/FINDC (file), CRUSA/CRUSC (record), GETCC/RELCC/GLOBZ (storage).
 - ECB (Entry Control Block) is the core transaction context.
-- CE1CR0 — communication register for input data.
+- CE1CR0 = communication register for input data.
 - REXX in z/TPF uses the RAVEN environment; exec files are .REX.
+- Z commands: operator console format Z CMD [PARAMS].
 
-### Z Command Entries (ZTPF)
-- Z commands are operator console commands with format: Z CMD [PARAMS]
-- Z TPFDF — TPF Data Facility commands for file management
-- Z ENTRY — display / modify entry properties
-- Z TRAP — set diagnostic traps
-- Z DUMP — memory dump commands
-- Z SSBP — SSB pool management
-- Z STAT — performance statistics
-- Z TRANS — transaction control
-- Z PROG — program management
-- Each Z command has: command verb, operands, modifiers.
-
-### VAR File Format
-VAR files define variable tables for TPF entries:
+## VAR File Format (fixed-width columns)
   VAR_NAME        TYPE    LEN   SOURCE        DEFAULT     VALIDATION        DESCRIPTION
-  ─────────────── ─────── ───── ───────────── ─────────── ─────────────────
-  Fields: CHAR / BIN / PACK / HEX / ADDR / EQU
-  Sources: INPUT / FILE / SYSTEM / INTERNAL / ECB / COMPUTED
-  Validation: NOT NULL / NUMERIC / ALPHANUMERIC / NONE / RANGE(x,y)
+  Fields: CHAR/BIN/PACK/HEX/ADDR/EQU | Sources: INPUT/FILE/SYSTEM/INTERNAL/ECB/COMPUTED
 
-### TDRV File Format (Test Driver)
-TDRV files define the test execution flow:
+## TDRV File Format
   STEP   ACTION               ENTRY        CONDITION           NEXT
-  ────── ──────────────────── ──────────── ─────────────────── ────
-  Actions: RECEIVE REQUEST / VALIDATE INPUT / FILE ACCESS / PROCESS DATA /
-           ERROR HANDLING / RETURN RESPONSE / Z COMMAND / REXX EXEC
+  Actions: RECEIVE REQUEST / VALIDATE INPUT / FILE ACCESS / PROCESS DATA / ERROR HANDLING / RETURN RESPONSE
 
-### TDR File Format (Transaction Requirements Document)
-TDR = structured prose + structured data:
-  TDR NAME:    <entry> — <purpose>
-  ENTRY:       <name>
-  SEGMENT:     <segment>
-  PURPOSE:     <narrative>
-  INPUT:       - field list
-  OUTPUT:      - field list
-  DEPENDENCIES:- macro / file list
-  EXCEPTIONS:  - error conditions
-  DOWNSTREAM IMPACT: narrative
-  Z COMMANDS:  list of relevant operator commands
-  REXX INTERFACE: RAVEN exec details
+## TDR Format
+  TDR NAME / ENTRY / SEGMENT / PURPOSE / INPUT / OUTPUT / DEPENDENCIES / EXCEPTIONS / Z COMMANDS
 
 ## Output Rules
-- Always produce syntactically valid, production-grade output.
-- VAR / TDRV / TDR files must use correct fixed-width column alignment.
 - IBM z/TPF REXX must use RAVEN-compatible syntax.
 - For Z Command training, include relevant Z CMD examples in TDR.
 - Never hallucinate macro names. Use only documented IBM z/TPF macros.
@@ -102,37 +65,12 @@ TDR = structured prose + structured data:
 # ADVISOR SYSTEM PROMPT — Llama 3.3
 # ─────────────────────────────────────────────
 
-ADVISOR_SYSTEM = f"""\
-You are STS Advisor, a senior IBM z/TPF engineering consultant specializing in \
-code quality, risk assessment, and production safety recommendations.
+ADVISOR_SYSTEM = """\
+You are STS Advisor, a senior IBM z/TPF engineering consultant.
+Produce a JSON array of engineering recommendations. Each item:
+{"severity": "ERROR"|"WARNING"|"INFO"|"OPTIMIZATION", "category": string, "text": string, "code_hint": string|null}
 
-## IBM z/TPF Knowledge Base
-The following troubleshooting rules and system definitions MUST guide your recommendations:
-{json.dumps(KNOWLEDGE, indent=2)}
-
-You receive:
-1. A parsed summary of an IBM z/TPF entry (structure, macros, variables, complexity).
-2. OPTIONALLY: Draft VAR / TDRV / TDR files generated by Qwen2.5-Coder.
-
-
-Your task: produce a JSON array of engineering recommendations. Each item:
-{{
-  "severity": "ERROR" | "WARNING" | "INFO" | "OPTIMIZATION",
-  "category": string,   // e.g. ERROR_HANDLING, ECB_SAFETY, STORAGE, PNR, REXX, Z_COMMAND, etc.
-  "text": string,       // concise, actionable recommendation (1-3 sentences)
-  "code_hint": string | null  // optional short code snippet if relevant
-}}
-
-Focus areas:
-- ECB safety and entry lifecycle (ENTER/EXIT/BACK correctness)
-- Storage leak prevention (GETCC without RELCC)
-- PNR simultaneous access protection
-- REXX/RAVEN exec integration quality
-- Z Command operator interface coverage
-- Error path completeness
-- Branch complexity and refactoring hints
-- Production TPF validation requirements
-
+Focus: ECB safety, storage leaks, PNR access protection, REXX quality, Z-Command coverage, error paths.
 Respond ONLY with a valid JSON array. No prose, no markdown fences.
 """
 
@@ -141,11 +79,10 @@ Respond ONLY with a valid JSON array. No prose, no markdown fences.
 # LOW-LEVEL OLLAMA CALL
 # ─────────────────────────────────────────────
 
-def _call_ollama(model: str, system: str, user_prompt: str, temperature: float = 0.2) -> str:
+def _call_ollama(model: str, system: str, user_prompt: str, temperature: float = 0.2, num_predict: int = FULL_TOKENS) -> str:
     """
     Call the Ollama /api/generate endpoint.
     Returns the assembled response string.
-    Raises httpx.HTTPError on failure.
     """
     payload = {
         "model": model,
@@ -155,7 +92,7 @@ def _call_ollama(model: str, system: str, user_prompt: str, temperature: float =
         "options": {
             "temperature": temperature,
             "top_p": 0.9,
-            "num_predict": 4096,
+            "num_predict": num_predict,
             "stop": [],
         },
     }
@@ -194,6 +131,85 @@ def list_available_models() -> list[str]:
         return []
 
 
+
+# ─────────────────────────────────────────────
+# STREAMING OLLAMA CALL
+# ─────────────────────────────────────────────
+
+def stream_ollama(model: str, system: str, user_prompt: str, temperature: float = 0.2, num_predict: int = FAST_TOKENS):
+    """
+    Stream tokens from Ollama one chunk at a time.
+    Yields raw token strings immediately as generated.
+    """
+    payload = {
+        "model": model,
+        "system": system,
+        "prompt": user_prompt,
+        "stream": True,
+        "options": {
+            "temperature": temperature,
+            "top_p": 0.9,
+            "num_predict": num_predict,
+        },
+    }
+    try:
+        with httpx.Client(timeout=TIMEOUT) as client:
+            with client.stream("POST", f"{OLLAMA_BASE}/api/generate", json=payload) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                        token = chunk.get("response", "")
+                        if token:
+                            yield token
+                        if chunk.get("done"):
+                            break
+                    except json.JSONDecodeError:
+                        continue
+    except httpx.ConnectError:
+        yield "[Error: Ollama not reachable]"
+
+
+def explain_z_command_stream(command: str):
+    """Stream explanation of a Z-Command token by token."""
+    base_cmd = command.strip().split()[0].upper() if command.strip() else ""
+    kb_entry  = KNOWLEDGE.get("z_commands", {}).get(base_cmd)
+
+    if kb_entry:
+        prompt = (
+            f"Explain the IBM z/TPF '{base_cmd}' command.\n"
+            f"Definition: {kb_entry}\n\n"
+            f"Expand briefly on its use case.\n"
+            f"Format:\n**Command:** {base_cmd}\n**Purpose:** <purpose>\n**Usage:** <detail>"
+        )
+    else:
+        prompt = (
+            f"Explain the IBM z/TPF command: {command}\n"
+            f"Format: **Command:** <name>\n**Purpose:** <purpose>\n**Usage:** <details>"
+        )
+    yield from stream_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1, num_predict=FAST_TOKENS)
+
+
+def chat_stream(query: str):
+    """Stream a general ZTPF copilot chat answer."""
+    first_word = query.strip().split()[0].upper() if query.strip() else ""
+    kb_entry   = KNOWLEDGE.get("z_commands", {}).get(first_word)
+
+    if kb_entry:
+        prompt = (
+            f"Explain the IBM z/TPF '{first_word}' command.\n"
+            f"Definition: {kb_entry}\nExpand briefly on its use case."
+        )
+    else:
+        prompt = (
+            f"You are the STS Coder IBM z/TPF Copilot. Answer concisely:\n{query}\n"
+            f"Use IBM z/TPF knowledge: Z-Commands, REXX, VAR, TDRV, TDR, TPF assembler."
+        )
+    yield from stream_ollama(ADVISOR_MODEL, ADVISOR_SYSTEM, prompt, temperature=0.4, num_predict=FAST_TOKENS)
+
+
 # ─────────────────────────────────────────────
 # CODER FUNCTIONS (Qwen2.5-Coder)
 # IBM REXX / RAVEN, VAR, TDRV, TDR
@@ -215,15 +231,11 @@ Apply Z/TPF variable naming conventions and ZTPF source designations.
 
 def generate_tdrv_llm(parsed_summary: dict, var_output: Optional[str] = None) -> str:
     """Use Qwen2.5-Coder to generate a TDRV test driver file."""
-    context = f"""Entry Summary:
-{json.dumps(parsed_summary, indent=2)}
-"""
-    if var_output:
-        context += f"\nVAR File (for reference):\n{var_output[:800]}\n"
-
     prompt = f"""Generate a complete IBM z/TPF TDRV (Test Driver) file.
 
-{context}
+Entry Summary:
+{json.dumps(parsed_summary, indent=2)}
+
 Include steps for:
 - Request receipt
 - Input validation (if applicable)
@@ -244,10 +256,7 @@ def generate_tdr_llm(parsed_summary: dict, var_output: Optional[str] = None,
     context = f"""Entry Summary:
 {json.dumps(parsed_summary, indent=2)}
 """
-    if var_output:
-        context += f"\nVAR File:\n{var_output[:600]}\n"
-    if tdrv_output:
-        context += f"\nTDRV File:\n{tdrv_output[:600]}\n"
+
 
     prompt = f"""Generate a complete IBM z/TPF TDR (Transaction Requirements Document).
 
@@ -318,7 +327,7 @@ Format it as:
 **Purpose:** <Purpose>
 **Details:** <short explanation>
 """
-    return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1)
+    return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1, num_predict=FAST_TOKENS)
 
 
 def analyze_entry_llm(raw_text: str, parsed_summary: dict) -> dict:
@@ -346,7 +355,7 @@ Return a JSON object with these keys:
 Respond ONLY with valid JSON.
 """
     try:
-        raw = _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1)
+        raw = _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1, num_predict=ANALYSIS_TOKENS)
         # Extract JSON
         m = re.search(r'\{.*\}', raw, re.DOTALL)
         if m:
@@ -390,7 +399,7 @@ def generate_recommendations_llm(
     user_prompt = "\n".join(context_parts) + "\n\nProduce engineering recommendations as JSON array."
 
     try:
-        raw = _call_ollama(ADVISOR_MODEL, ADVISOR_SYSTEM, user_prompt, temperature=0.3)
+        raw = _call_ollama(ADVISOR_MODEL, ADVISOR_SYSTEM, user_prompt, temperature=0.3, num_predict=FAST_TOKENS)
         # Extract JSON array
         m = re.search(r'\[.*\]', raw, re.DOTALL)
         if m:
@@ -454,44 +463,51 @@ def run_full_pipeline_llm(raw_text: str, parsed_summary: dict) -> dict:
         "errors": [],
     }
 
-    # Phase 1a: Coder — structural analysis
-    try:
-        log.info(f"[LLM] Phase 1a: {CODER_MODEL} — entry analysis")
-        result["analysis"] = analyze_entry_llm(raw_text, parsed_summary)
-    except Exception as e:
-        result["errors"].append(f"Coder analysis: {e}")
+    # Phase 1: Run all Coder generation tasks in parallel
+    log.info(f"[LLM] Phase 1: Running {CODER_MODEL} generations in parallel...")
+    
+    def safe_run(func, *args):
+        try:
+            return func(*args)
+        except Exception as e:
+            return e
 
-    # Phase 1b: Coder — VAR file
-    try:
-        log.info(f"[LLM] Phase 1b: {CODER_MODEL} — VAR generation")
-        result["var_file"] = generate_var_llm(parsed_summary)
-    except Exception as e:
-        result["errors"].append(f"VAR generation: {e}")
-
-    # Phase 1c: Coder — TDRV (with VAR context = reinforcement)
-    try:
-        log.info(f"[LLM] Phase 1c: {CODER_MODEL} — TDRV generation")
-        result["tdrv_file"] = generate_tdrv_llm(parsed_summary, result["var_file"] or None)
-    except Exception as e:
-        result["errors"].append(f"TDRV generation: {e}")
-
-    # Phase 1d: Coder — TDR (with VAR+TDRV context = reinforcement)
-    try:
-        log.info(f"[LLM] Phase 1d: {CODER_MODEL} — TDR generation")
-        result["tdr_file"] = generate_tdr_llm(
-            parsed_summary,
-            result["var_file"] or None,
-            result["tdrv_file"] or None
-        )
-    except Exception as e:
-        result["errors"].append(f"TDR generation: {e}")
-
-    # Phase 1e: Coder — REXX exec
-    try:
-        log.info(f"[LLM] Phase 1e: {CODER_MODEL} — REXX generation")
-        result["rexx_exec"] = generate_rexx_llm(parsed_summary)
-    except Exception as e:
-        result["errors"].append(f"REXX generation: {e}")
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        f_analysis = executor.submit(safe_run, analyze_entry_llm, raw_text, parsed_summary)
+        f_var      = executor.submit(safe_run, generate_var_llm, parsed_summary)
+        f_tdrv     = executor.submit(safe_run, generate_tdrv_llm, parsed_summary, None)
+        f_tdr      = executor.submit(safe_run, generate_tdr_llm, parsed_summary, None, None)
+        f_rexx     = executor.submit(safe_run, generate_rexx_llm, parsed_summary)
+        
+        res_analysis = f_analysis.result()
+        if isinstance(res_analysis, Exception):
+            result["errors"].append(f"Coder analysis: {res_analysis}")
+        else:
+            result["analysis"] = res_analysis
+            
+        res_var = f_var.result()
+        if isinstance(res_var, Exception):
+            result["errors"].append(f"VAR generation: {res_var}")
+        else:
+            result["var_file"] = res_var
+            
+        res_tdrv = f_tdrv.result()
+        if isinstance(res_tdrv, Exception):
+            result["errors"].append(f"TDRV generation: {res_tdrv}")
+        else:
+            result["tdrv_file"] = res_tdrv
+            
+        res_tdr = f_tdr.result()
+        if isinstance(res_tdr, Exception):
+            result["errors"].append(f"TDR generation: {res_tdr}")
+        else:
+            result["tdr_file"] = res_tdr
+            
+        res_rexx = f_rexx.result()
+        if isinstance(res_rexx, Exception):
+            result["errors"].append(f"REXX generation: {res_rexx}")
+        else:
+            result["rexx_exec"] = res_rexx
 
     # Phase 2: Llama 3.3 — recommendations with full Phase 1 context
     try:

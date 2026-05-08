@@ -27,12 +27,14 @@ Run:
 
 import os
 import sys
+import json
 import traceback
 import logging
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO)
@@ -57,6 +59,8 @@ from llm import (
     generate_recommendations_llm,
     analyze_entry_llm,
     explain_z_command_llm,
+    explain_z_command_stream,
+    chat_stream,
     CODER_MODEL,
     ADVISOR_MODEL,
 )
@@ -235,6 +239,63 @@ def get_models():
     }
 
 
+@app.get("/api/stream/zcmd")
+def stream_zcmd(command: str = ""):
+    """SSE stream: explain a Z-Command. KB-first (instant), LLM fallback."""
+    from llm.tpf_knowledge import KNOWLEDGE
+    base_cmd = command.strip().split()[0].upper() if command.strip() else ""
+    kb_entry = KNOWLEDGE.get("z_commands", {}).get(base_cmd)
+
+    def generate_kb(text):
+        yield f"data: {json.dumps({'token': text, 'done': False})}\n\n"
+        yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
+
+    def generate_llm():
+        for token in explain_z_command_stream(command):
+            yield f"data: {json.dumps({'token': token, 'done': False})}\n\n"
+        yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
+
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    if kb_entry:
+        text = (
+            f"**Command:** {base_cmd}\n"
+            f"**Purpose:** {kb_entry}\n\n"
+            f"**Usage:** Enter `{base_cmd}` at the z/TPF operator console.\n"
+            f"This is an IBM z/TPF diagnostic Z-Command."
+        )
+        return StreamingResponse(generate_kb(text), media_type="text/event-stream", headers=headers)
+
+    return StreamingResponse(generate_llm(), media_type="text/event-stream", headers=headers)
+
+
+@app.get("/api/stream/chat")
+def stream_chat(query: str = ""):
+    """SSE stream: general ZTPF copilot chat token-by-token."""
+    from llm.tpf_knowledge import KNOWLEDGE
+    first_word = query.strip().split()[0].upper() if query.strip() else ""
+    kb_entry = KNOWLEDGE.get("z_commands", {}).get(first_word)
+
+    def generate_kb(text):
+        yield f"data: {json.dumps({'token': text, 'done': False})}\n\n"
+        yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
+
+    def generate_llm():
+        for token in chat_stream(query):
+            yield f"data: {json.dumps({'token': token, 'done': False})}\n\n"
+        yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
+
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    if kb_entry:
+        text = (
+            f"**Command:** {first_word}\n"
+            f"**Purpose:** {kb_entry}\n\n"
+            f"**Usage:** Enter `{first_word}` at the z/TPF operator console."
+        )
+        return StreamingResponse(generate_kb(text), media_type="text/event-stream", headers=headers)
+
+    return StreamingResponse(generate_llm(), media_type="text/event-stream", headers=headers)
+
+
 @app.post("/api/analyze", response_model=AnalysisResponse)
 def analyze_entry(req: TPFEntryRequest):
     """Analyze a TPF entry — static + optional LLM (Qwen2.5-Coder + Llama 3.3)."""
@@ -388,21 +449,40 @@ def gen_rexx(req: TPFEntryRequest):
 
 @app.post("/api/explain", response_model=GenerateResponse)
 def explain_zcmd(req: TPFEntryRequest):
-    """Explain a single ZTPF Z Command — Qwen2.5-Coder only."""
+    """Explain a single ZTPF Z Command — Knowledge Base first, then LLM."""
     try:
+        from llm.tpf_knowledge import KNOWLEDGE
+        cmd_text = req.raw_text.strip()
+        base_cmd = cmd_text.split()[0].upper() if cmd_text else ""
+
+        # Try knowledge base first (instant, no LLM needed)
+        kb_entry = KNOWLEDGE.get("z_commands", {}).get(base_cmd)
+        
+        if kb_entry and not is_ollama_available():
+            # Pure KB fallback — format nicely
+            output = f"**Command:** {base_cmd}\n**Purpose:** {kb_entry}\n\n[Response from local knowledge base — Ollama offline]"
+            return GenerateResponse(
+                output=output,
+                file_type="ZCMD",
+                entry_name="Z_CMD",
+                llm_mode="knowledge_base",
+                chat_response=f"Here is what I know about **{base_cmd}**: {kb_entry}",
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+
         if not is_ollama_available():
             raise HTTPException(
                 status_code=503,
-                detail="Ollama not available. Start Ollama and pull qwen2.5-coder to use Z-CMD explanation."
+                detail="Ollama not available. Start Ollama or enter a known Z Command for a knowledge-base response."
             )
 
-        output = explain_z_command_llm(req.raw_text.strip())
+        output = explain_z_command_llm(cmd_text)
         return GenerateResponse(
             output=output,
             file_type="ZCMD",
             entry_name="Z_CMD",
-            llm_mode=f"qwen2.5-coder",
-            chat_response="I have analyzed your Z-Command. Please review the explanation in the Z-CMD tab.",
+            llm_mode="qwen2.5-coder",
+            chat_response=f"Here is the explanation for **{base_cmd}**: {output[:300]}...",
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
     except HTTPException:
@@ -413,22 +493,62 @@ def explain_zcmd(req: TPFEntryRequest):
 
 @app.post("/api/chat", response_model=GenerateResponse)
 def chat_only(req: TPFEntryRequest):
-    """General ZTPF conversational endpoint."""
+    """General ZTPF conversational endpoint — Dual model: Qwen answers, Llama refines."""
     try:
-        if not is_ollama_available():
-            raise HTTPException(status_code=503, detail="Ollama not available.")
+        from llm.tpf_knowledge import KNOWLEDGE
+        query = req.raw_text.strip()
         
-        # We can reuse the explain_z_command_llm logic but tweak the prompt, 
-        # or just pass it as a general question to the Coder model.
-        # For simplicity, we use explain_z_command_llm as it has the knowledge base.
-        output = explain_z_command_llm(req.raw_text.strip())
+        # Check if this is a Z-command lookup
+        first_word = query.split()[0].upper() if query else ""
+        kb_entry = KNOWLEDGE.get("z_commands", {}).get(first_word)
+        
+        if kb_entry:
+            # Direct Z-command hit in knowledge base
+            output = f"**Command:** {first_word}\n**Purpose:** {kb_entry}\n"
+            if is_ollama_available():
+                # Enrich with LLM
+                output = explain_z_command_llm(query)
+            return GenerateResponse(
+                output=output,
+                file_type="CHAT",
+                entry_name="CHAT",
+                llm_mode="knowledge_base+llm" if is_ollama_available() else "knowledge_base",
+                chat_response=output,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        
+        if not is_ollama_available():
+            # Fallback: search knowledge base for keywords
+            query_lower = query.lower()
+            matches = []
+            for cmd, purpose in KNOWLEDGE.get("z_commands", {}).items():
+                if any(w in purpose.lower() for w in query_lower.split() if len(w) > 3):
+                    matches.append(f"  • **{cmd}**: {purpose}")
+            if matches:
+                output = f"Based on your query, here are relevant Z-Commands:\n\n" + "\n".join(matches[:5])
+            else:
+                output = "Ollama is offline. I can answer Z-Command lookups from my knowledge base. Try entering a specific Z-Command like ZDSYS or ZDECB."
+            return GenerateResponse(
+                output=output, file_type="CHAT", entry_name="CHAT",
+                llm_mode="knowledge_base", chat_response=output,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+
+        # General conversational question — use Advisor (Llama) for best results
+        from llm.ollama_client import ADVISOR_MODEL, ADVISOR_SYSTEM, _call_ollama
+        prompt = f"""You are the STS Coder IBM z/TPF Engineering Copilot. Answer this question clearly and concisely:
+
+{query}
+
+Use your knowledge of IBM z/TPF, Z-Commands, REXX, VAR, TDRV, TDR and TPF assembler."""
+        output = _call_ollama(ADVISOR_MODEL, ADVISOR_SYSTEM, prompt, temperature=0.4)
         
         return GenerateResponse(
             output=output,
             file_type="CHAT",
             entry_name="CHAT",
-            llm_mode=f"qwen2.5-coder",
-            chat_response=output, # The output itself is the chat response
+            llm_mode=f"{ADVISOR_MODEL}",
+            chat_response=output,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
     except HTTPException:

@@ -10,6 +10,8 @@ from .ollama_client import (
     generate_recommendations_llm,
     analyze_entry_llm,
     explain_z_command_llm,
+    explain_z_command_stream,
+    chat_stream,
     CODER_MODEL,
     ADVISOR_MODEL,
 )
