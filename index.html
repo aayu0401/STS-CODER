@@ -4,25 +4,31 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STS Coder | IBM z/TPF AI Engineering Copilot</title>
-  <meta name="description" content="AI copilot for IBM z/TPF with reinforcement for VAR, TDRV, TDR and REXX generation." />
+  <meta name="description" content="AI copilot for IBM z/TPF with dual-model reinforcement for VAR, TDRV, TDR and REXX generation." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=6" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css?v=8" />
 </head>
 <body>
+
+  <!-- Ambient background glows -->
+  <div class="ambient-glow glow-1"></div>
+  <div class="ambient-glow glow-2"></div>
+  <div class="ambient-glow glow-3"></div>
 
   <!-- ─── HEADER ─── -->
   <header id="app-header">
     <div class="header-left">
       <div class="logo-mark">
-        <svg width="32" height="32" viewBox="0 0 36 36" fill="none">
-          <rect width="36" height="36" rx="8" fill="url(#logo-grad)" />
-          <path d="M9 13h18M9 18h14M9 23h16" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
-          <circle cx="27" cy="10" r="4" fill="#10b981"/>
+        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+          <rect width="36" height="36" rx="10" fill="url(#logo-grad)" />
+          <path d="M9 12h18M9 18h13M9 24h16" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
+          <circle cx="27" cy="9" r="4.5" fill="#10b981"/>
+          <circle cx="27" cy="9" r="2.5" fill="#fff" opacity="0.9"/>
           <defs>
             <linearGradient id="logo-grad" x1="0" y1="0" x2="36" y2="36">
-              <stop stop-color="#2563eb"/><stop offset="1" stop-color="#1e40af"/>
+              <stop stop-color="#3b82f6"/><stop offset="1" stop-color="#1e40af"/>
             </linearGradient>
           </defs>
         </svg>
@@ -31,30 +37,49 @@
         <span class="brand">Travelport</span>
         <h1 class="app-title">STS Coder <span class="version-badge">v2.0</span></h1>
       </div>
+      <div class="header-tag">IBM z/TPF Copilot</div>
     </div>
+
     <div class="header-center">
-      <!-- Model Status Pills -->
-      <div class="model-pills" id="model-pills">
-        <div class="model-pill" id="pill-coder">
-          <span class="pill-dot"></span>
-          <span class="pill-label">AI Engine</span>
-          <span class="pill-role">VAR · TDRV · TDR · REXX</span>
+      <!-- Dual-model pipeline indicator -->
+      <div class="pipeline-indicator" id="model-pills">
+        <div class="pipeline-model" id="pill-coder">
+          <div class="pipeline-dot"></div>
+          <div class="pipeline-info">
+            <span class="pipeline-name">Qwen2.5-Coder</span>
+            <span class="pipeline-role">Builder · VAR · TDRV · TDR · REXX</span>
+          </div>
         </div>
-        <div class="model-arrow">⟶</div>
-        <div class="model-pill" id="pill-advisor">
-          <span class="pill-dot"></span>
-          <span class="pill-label">AI Advisor</span>
-          <span class="pill-role">Recommendations</span>
+        <div class="pipeline-arrow">
+          <svg width="40" height="16" viewBox="0 0 40 16" fill="none">
+            <path d="M2 8h32" stroke="url(#arrow-grad)" stroke-width="1.5" stroke-dasharray="4 2"/>
+            <path d="M30 4l6 4-6 4" stroke="#3b82f6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <defs>
+              <linearGradient id="arrow-grad" x1="0" y1="0" x2="40" y2="0">
+                <stop stop-color="#6366f1"/><stop offset="1" stop-color="#3b82f6"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <div class="pipeline-model" id="pill-advisor">
+          <div class="pipeline-dot"></div>
+          <div class="pipeline-info">
+            <span class="pipeline-name">Llama 3.2</span>
+            <span class="pipeline-role">Advisor · Risk · Recommendations</span>
+          </div>
         </div>
       </div>
     </div>
+
     <div class="header-right">
       <div class="status-group">
         <div class="status-indicator" id="ollama-status">
           <span class="status-dot" id="ollama-dot"></span>
           <span class="status-text" id="ollama-text">Checking…</span>
         </div>
-        <button id="btn-check-models" class="btn-ghost" title="Refresh model status">↻ Refresh</button>
+        <button id="btn-check-models" class="btn-ghost" title="Refresh model status">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
       </div>
     </div>
   </header>
@@ -64,13 +89,17 @@
 
     <!-- ─── LEFT: COPILOT PANEL ─── -->
     <section id="input-panel" class="panel copilot-panel">
+
+      <!-- Panel Header -->
       <div class="panel-header">
-        <h2 class="panel-title">
-          <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 12 2.1 12"/><path d="M12 12l8.6 5"/></svg>
-          STS Copilot
-        </h2>
+        <div class="panel-header-left">
+          <div class="panel-icon-wrap">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </div>
+          <h2 class="panel-title">STS Copilot</h2>
+        </div>
         <button id="btn-clear-input" class="btn-icon" title="Clear Chat" aria-label="Clear chat">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
 
@@ -78,78 +107,115 @@
       <div id="chat-history" class="chat-history">
         <div class="chat-message ai">
           <div class="msg-avatar">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 12 2.1 12"/><path d="M12 12l8.6 5"/></svg>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 12 2.1 12"/><path d="M12 12l8.6 5"/></svg>
           </div>
           <div class="msg-content">
-            <p>Hello! I am your <strong>STS Copilot</strong>.</p>
-            <p>Paste your IBM z/TPF assembly, REXX exec, or Z Command below. I will work with the Advisor to generate your VAR/TDR documentation and check for risks.</p>
+            <p>Hello! I'm your <strong>STS Copilot</strong> — IBM z/TPF Engineering AI.</p>
+            <p>Paste assembly, REXX, or Z-Commands below and I'll work with the Advisor to generate VAR/TDR documentation and analyse risks.</p>
+            <div class="quick-actions">
+              <button class="quick-btn" onclick="document.getElementById('entry-input').value='ZDSYS'; document.getElementById('mode-zcmd').click()">Try ZDSYS</button>
+              <button class="quick-btn" onclick="document.getElementById('entry-input').value='ZDECB'; document.getElementById('mode-zcmd').click()">Try ZDECB</button>
+              <button class="quick-btn" onclick="document.getElementById('mode-chat').click(); document.getElementById('entry-input').value='What is the ECB in z/TPF?'">Ask AI</button>
+            </div>
           </div>
         </div>
       </div>
 
-      <!-- Chat Input Area -->
+      <!-- Chat Input -->
       <div class="chat-input-area">
+
         <!-- Mode Selector -->
-        <div class="mode-selector compact">
+        <div class="mode-selector">
+          <div class="mode-group-label">Mode</div>
           <div class="mode-buttons scrollable-modes" role="radiogroup" aria-label="Output mode">
-            <button class="mode-btn active" data-mode="FULL"    role="radio" aria-checked="true"  id="mode-full">Full Pack</button>
-            <button class="mode-btn"        data-mode="ANALYZE" role="radio" aria-checked="false" id="mode-analyze">Analyze</button>
-            <button class="mode-btn"        data-mode="VAR"     role="radio" aria-checked="false" id="mode-var">VAR</button>
-            <button class="mode-btn"        data-mode="TDRV"    role="radio" aria-checked="false" id="mode-tdrv">TDRV</button>
-            <button class="mode-btn"        data-mode="TDR"     role="radio" aria-checked="false" id="mode-tdr">TDR</button>
-            <button class="mode-btn"        data-mode="REXX"    role="radio" aria-checked="false" id="mode-rexx">REXX</button>
-            <button class="mode-btn outline" data-mode="ZCMD"    role="radio" aria-checked="false" id="mode-zcmd">Z-CMD</button>
-            <button class="mode-btn outline" data-mode="CHAT"    role="radio" aria-checked="false" id="mode-chat">Chat Only</button>
+            <button class="mode-btn active" data-mode="FULL"    role="radio" aria-checked="true"  id="mode-full">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              Full Pack
+            </button>
+            <button class="mode-btn" data-mode="ANALYZE" role="radio" aria-checked="false" id="mode-analyze">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              Analyze
+            </button>
+            <button class="mode-btn" data-mode="VAR"     role="radio" aria-checked="false" id="mode-var">VAR</button>
+            <button class="mode-btn" data-mode="TDRV"    role="radio" aria-checked="false" id="mode-tdrv">TDRV</button>
+            <button class="mode-btn" data-mode="TDR"     role="radio" aria-checked="false" id="mode-tdr">TDR</button>
+            <button class="mode-btn" data-mode="REXX"    role="radio" aria-checked="false" id="mode-rexx">REXX</button>
+            <div class="mode-divider"></div>
+            <button class="mode-btn mode-special" data-mode="ZCMD"    role="radio" aria-checked="false" id="mode-zcmd">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+              Z-CMD
+            </button>
+            <button class="mode-btn mode-special" data-mode="CHAT"    role="radio" aria-checked="false" id="mode-chat">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              Chat
+            </button>
           </div>
         </div>
 
+        <!-- Input wrapper -->
         <div class="chat-input-wrapper">
-          <button id="btn-attach-file" class="btn-icon attach-btn" title="Attach file (.asm, .txt, .rex)" onclick="document.getElementById('file-input').click()">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          <button id="btn-attach-file" class="btn-icon attach-btn" title="Attach file" onclick="document.getElementById('file-input').click()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
           </button>
           <input type="file" id="file-input" accept=".txt,.asm,.tpf,.rex,.s,.bal" hidden />
-          
-          <textarea id="entry-input" class="chat-textarea" spellcheck="false" placeholder="Message STS Copilot or paste code..."></textarea>
-        </div>
-        
-        <div class="chat-footer">
-          <input type="text" id="entry-name" class="entry-name-compact" placeholder="Entry Name (e.g. TR001)" spellcheck="false" />
-          <span id="char-count" class="char-count">0 chars</span>
+          <textarea id="entry-input" class="chat-textarea" spellcheck="false" placeholder="Paste z/TPF assembly, REXX, Z-Command, or ask anything…"></textarea>
+          <button id="btn-generate" class="btn-send" aria-label="Send">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
         </div>
 
-        <button id="btn-generate" class="btn-primary" aria-label="Send message" style="margin-top: 0.75rem; width: 100%;">
-          Generate / Send
-        </button>
+        <!-- Footer row -->
+        <div class="chat-footer">
+          <input type="text" id="entry-name" class="entry-name-compact" placeholder="Entry name (5 chars, e.g. TR001)" spellcheck="false" />
+          <div class="footer-right">
+            <span id="char-count" class="char-count">0 chars</span>
+            <label class="toggle-label" title="Enable/Disable LLM">
+              <input type="checkbox" id="llm-toggle" checked />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-text">AI</span>
+            </label>
+          </div>
+        </div>
       </div>
     </section>
 
     <!-- ─── RIGHT: OUTPUT PANEL ─── -->
-    <section id="output-panel" class="panel">
+    <section id="output-panel" class="panel output-panel">
+
+      <!-- Panel Header -->
       <div class="panel-header">
-        <h2 class="panel-title">
-          <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
-          Output
-        </h2>
+        <div class="panel-header-left">
+          <div class="panel-icon-wrap">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+          </div>
+          <h2 class="panel-title">Workspace</h2>
+        </div>
         <div class="panel-actions">
           <span id="llm-mode-badge" class="llm-badge hidden"></span>
-          <button id="btn-copy" class="btn-icon" title="Copy" aria-label="Copy output" disabled>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <button id="btn-copy" class="btn-icon" title="Copy" disabled>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           </button>
-          <button id="btn-download" class="btn-icon" title="Download" aria-label="Download output" disabled>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <button id="btn-download" class="btn-icon" title="Download" disabled>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           </button>
         </div>
       </div>
 
       <!-- Output Tabs -->
-      <nav id="output-tabs" class="output-tabs" role="tablist" aria-label="Output sections">
-        <button class="tab active" data-tab="analysis"        role="tab" aria-selected="true"  id="tab-analysis">Analysis</button>
-        <button class="tab"        data-tab="var"             role="tab" aria-selected="false" id="tab-var">VAR</button>
-        <button class="tab"        data-tab="tdrv"            role="tab" aria-selected="false" id="tab-tdrv">TDRV</button>
-        <button class="tab"        data-tab="tdr"             role="tab" aria-selected="false" id="tab-tdr">TDR</button>
-        <button class="tab"        data-tab="rexx"            role="tab" aria-selected="false" id="tab-rexx">REXX</button>
-        <button class="tab"        data-tab="zcmd"            role="tab" aria-selected="false" id="tab-zcmd">Z-CMD</button>
-        <button class="tab"        data-tab="recommendations" role="tab" aria-selected="false" id="tab-recommendations">Advice</button>
+      <nav id="output-tabs" class="output-tabs" role="tablist">
+        <button class="tab active" data-tab="analysis"        role="tab" aria-selected="true"  id="tab-analysis">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          Analysis
+        </button>
+        <button class="tab" data-tab="var"             role="tab" aria-selected="false" id="tab-var">VAR</button>
+        <button class="tab" data-tab="tdrv"            role="tab" aria-selected="false" id="tab-tdrv">TDRV</button>
+        <button class="tab" data-tab="tdr"             role="tab" aria-selected="false" id="tab-tdr">TDR</button>
+        <button class="tab" data-tab="rexx"            role="tab" aria-selected="false" id="tab-rexx">REXX</button>
+        <button class="tab" data-tab="zcmd"            role="tab" aria-selected="false" id="tab-zcmd">Z-CMD</button>
+        <button class="tab tab-advice" data-tab="recommendations" role="tab" aria-selected="false" id="tab-recommendations">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Advice
+        </button>
       </nav>
 
       <!-- Tab Content -->
@@ -157,37 +223,76 @@
 
         <!-- Placeholder -->
         <div id="output-placeholder" class="output-placeholder">
-          <div class="placeholder-icon">
-             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-          </div>
-          <h3>Ready to Generate</h3>
-          <p>TDRV, TDR, and VAR files will be created from ZTPF entries as IBM REXX and RAVEN documentation.</p>
-          <div class="placeholder-modes">
-            <div class="placeholder-mode-card">
-              <span class="pm-label">Documentation</span>
-              <span class="pm-desc">Full VAR, TDRV, TDR pack</span>
+          <div class="placeholder-grid">
+            <div class="placeholder-hero">
+              <div class="placeholder-icon-ring">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/>
+                  <line x1="16" y1="17" x2="8" y2="17"/>
+                </svg>
+              </div>
+              <h3>Ready to Generate</h3>
+              <p>Paste IBM z/TPF source code, REXX exec, or a Z-Command into the Copilot panel and select a mode.</p>
             </div>
-            <div class="placeholder-mode-card">
-              <span class="pm-label">Z-CMD Lookup</span>
-              <span class="pm-desc">Explain single ZTPF commands</span>
-            </div>
-            <div class="placeholder-mode-card">
-              <span class="pm-label">AI Assistant</span>
-              <span class="pm-desc">Smart Analysis & Generation</span>
+            <div class="capability-cards">
+              <div class="cap-card">
+                <div class="cap-icon" style="background:rgba(59,130,246,0.15);color:#3b82f6">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                </div>
+                <div class="cap-info">
+                  <span class="cap-name">Full Pack</span>
+                  <span class="cap-desc">VAR · TDRV · TDR · REXX in one shot</span>
+                </div>
+              </div>
+              <div class="cap-card">
+                <div class="cap-icon" style="background:rgba(16,185,129,0.15);color:#10b981">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                </div>
+                <div class="cap-info">
+                  <span class="cap-name">Z-CMD Lookup</span>
+                  <span class="cap-desc">Instant knowledge-base answers</span>
+                </div>
+              </div>
+              <div class="cap-card">
+                <div class="cap-icon" style="background:rgba(139,92,246,0.15);color:#8b5cf6">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <div class="cap-info">
+                  <span class="cap-name">AI Advisor</span>
+                  <span class="cap-desc">Risk analysis & engineering review</span>
+                </div>
+              </div>
+              <div class="cap-card">
+                <div class="cap-icon" style="background:rgba(245,158,11,0.15);color:#f59e0b">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <div class="cap-info">
+                  <span class="cap-name">Chat Mode</span>
+                  <span class="cap-desc">Ask anything about z/TPF systems</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
 
         <!-- Processing -->
         <div id="output-processing" class="output-processing hidden">
-          <div class="processing-spinner">
-            <svg class="spinner-icon" viewBox="0 0 50 50">
-              <circle class="path" cx="25" cy="25" r="20" fill="none" stroke-width="4"></circle>
-            </svg>
+          <div class="processing-orb">
+            <div class="orb-ring orb-ring-1"></div>
+            <div class="orb-ring orb-ring-2"></div>
+            <div class="orb-ring orb-ring-3"></div>
+            <svg class="orb-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 12 2.1 12"/><path d="M12 12l8.6 5"/></svg>
           </div>
-          <h3 id="processing-model-label">Processing…</h3>
-          <p id="processing-step" class="processing-step">Initialising…</p>
+          <h3 id="processing-model-label">Generating…</h3>
+          <p id="processing-step" class="processing-step">Initialising pipeline…</p>
           <div class="processing-bar"><div id="processing-fill" class="processing-fill"></div></div>
+          <div class="processing-models">
+            <span class="proc-model-tag">⚡ Qwen2.5-Coder</span>
+            <span class="proc-arrow">→</span>
+            <span class="proc-model-tag">🧠 Llama 3.2</span>
+          </div>
         </div>
 
         <!-- Result panels -->
@@ -204,16 +309,21 @@
 
   <!-- ─── FOOTER ─── -->
   <footer id="app-footer">
-    <span>© 2026 Travelport — STS Coder v2.0</span>
-    <span class="footer-sep">|</span>
-    <span>Powered by Local AI Models</span>
-    <span class="footer-sep">|</span>
-    <span>IBM z/TPF Engineering Copilot</span>
+    <div class="footer-left">
+      <span class="footer-brand">© 2026 Travelport</span>
+      <span class="footer-sep">·</span>
+      <span>STS Coder v2.0</span>
+    </div>
+    <div class="footer-center">
+      <span class="footer-dot" style="background:#10b981"></span>
+      <span>Dual-Model AI · Local Inference · Zero Data Leakage</span>
+    </div>
+    <div class="footer-right-text">IBM z/TPF Engineering Copilot</div>
   </footer>
 
   <!-- Toast -->
   <div id="toast" class="toast hidden" role="alert" aria-live="polite"></div>
 
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>
