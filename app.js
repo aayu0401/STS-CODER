@@ -1,4 +1,4 @@
-/* STS Coder v2.0 — Dual-Model App Logic (Light Theme & Z-CMD) */
+/* STS Coder v2.0 — Enterprise z/TPF AI Copilot */
 (function () {
   'use strict';
 
@@ -539,6 +539,7 @@
     recs.forEach(r => {
       const cls = r.severity==='ERROR'?'badge-error':r.severity==='WARNING'?'badge-warning':r.severity==='OPTIMIZATION'?'badge-optimization':'badge-info';
       rh += `<div class="rec-item"><span class="result-badge ${cls}">${esc(r.severity)}</span><div class="rec-body">`;
+
       if (r.category) rh += `<span class="rec-category">${esc(r.category)}</span>`;
       rh += `<span class="rec-text">${esc(r.text)}</span>`;
       if (r.code_hint) rh += `<code class="rec-code">${esc(r.code_hint)}</code>`;
@@ -547,4 +548,252 @@
     rh += '</div>';
     $('#result-recommendations').innerHTML = rh;
   }
+
+  // ═══════════════════════════════════════════════════════
+  // ── DARK / LIGHT THEME TOGGLE
+  // ═══════════════════════════════════════════════════════
+  (function initTheme() {
+    const saved = localStorage.getItem('sts-theme') || 'light';
+    document.documentElement.setAttribute('data-theme', saved);
+    const btn = $('#btn-theme');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      const cur = document.documentElement.getAttribute('data-theme');
+      const next = cur === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('sts-theme', next);
+    });
+  })();
+
+  // ═══════════════════════════════════════════════════════
+  // ── Z-CMD BROWSER SIDEBAR
+  // ═══════════════════════════════════════════════════════
+  let allCommands = [], activeCategory = 'All';
+
+  function openSidebar() {
+    document.body.classList.add('sidebar-open');
+    if (allCommands.length === 0) loadZcmdList();
+  }
+  function closeSidebar() { document.body.classList.remove('sidebar-open'); }
+
+  const btnSidebarToggle = $('#btn-zcmd-browser');
+  const btnSidebarClose  = $('#btn-sidebar-close');
+  if (btnSidebarToggle) btnSidebarToggle.addEventListener('click', () => document.body.classList.contains('sidebar-open') ? closeSidebar() : openSidebar());
+  if (btnSidebarClose)  btnSidebarClose.addEventListener('click', closeSidebar);
+
+  async function loadZcmdList() {
+    try {
+      const r = await fetch(`${API}/api/zcmd/list`);
+      const data = await r.json();
+      allCommands = data.commands || [];
+      renderZcmdCategories();
+      renderZcmdList(allCommands);
+    } catch(e) { console.warn('ZCMD list load failed', e); }
+  }
+
+  function renderZcmdCategories() {
+    const cats = ['All', ...new Set(allCommands.map(c => c.category))].sort();
+    const container = $('#zcmd-categories');
+    if (!container) return;
+    container.innerHTML = cats.map(c =>
+      `<button class="zcmd-cat-btn${c === activeCategory ? ' active' : ''}" data-cat="${c}">${c}</button>`
+    ).join('');
+    container.querySelectorAll('.zcmd-cat-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        activeCategory = btn.dataset.cat;
+        container.querySelectorAll('.zcmd-cat-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const q = ($('#zcmd-search') || {}).value || '';
+        filterZcmd(q);
+      });
+    });
+  }
+
+  function renderZcmdList(cmds) {
+    const list = $('#zcmd-list');
+    if (!list) return;
+    if (cmds.length === 0) { list.innerHTML = '<div class="history-empty">No commands found.</div>'; return; }
+    list.innerHTML = cmds.map(c => `
+      <div class="zcmd-item" data-cmd="${c.cmd}">
+        <span class="zcmd-item-cmd">${c.cmd}</span>
+        <div class="zcmd-item-info">
+          <div class="zcmd-item-purpose">${c.purpose}</div>
+          <div class="zcmd-item-cat">${c.category}</div>
+        </div>
+      </div>`).join('');
+    list.querySelectorAll('.zcmd-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const cmd = item.dataset.cmd;
+        setZcmd(cmd);
+        closeSidebar();
+      });
+    });
+  }
+
+  function filterZcmd(q) {
+    let filtered = allCommands;
+    if (activeCategory !== 'All') filtered = filtered.filter(c => c.category === activeCategory);
+    if (q.trim()) {
+      const lq = q.toLowerCase();
+      filtered = filtered.filter(c => c.cmd.toLowerCase().includes(lq) || c.purpose.toLowerCase().includes(lq));
+    }
+    renderZcmdList(filtered);
+  }
+
+  const zcmdSearch = $('#zcmd-search');
+  if (zcmdSearch) zcmdSearch.addEventListener('input', e => filterZcmd(e.target.value));
+
+  // Global helper used by quick-action buttons in HTML
+  window.setZcmd = function(cmd) {
+    const modeBtn = $('#mode-zcmd');
+    if (modeBtn) { document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active')); modeBtn.classList.add('active'); }
+    mode = 'ZCMD';
+    if (textarea) { textarea.value = cmd; textarea.dispatchEvent(new Event('input')); }
+    textarea && textarea.focus();
+  };
+  window.setChat = function(msg) {
+    const modeBtn = $('#mode-chat');
+    if (modeBtn) { document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active')); modeBtn.classList.add('active'); }
+    mode = 'CHAT';
+    if (textarea) { textarea.value = msg; textarea.dispatchEvent(new Event('input')); }
+  };
+
+  // ═══════════════════════════════════════════════════════
+  // ── STATIC CODE CHECKER
+  // ═══════════════════════════════════════════════════════
+  const btnCheck   = $('#btn-check-code');
+  const checkerBanner = $('#checker-banner');
+
+  if (btnCheck) {
+    btnCheck.addEventListener('click', async () => {
+      const code = textarea ? textarea.value.trim() : '';
+      if (!code) { showToast('Paste code first to run the checker.'); return; }
+      btnCheck.textContent = '…';
+      btnCheck.disabled = true;
+      try {
+        const r = await fetch(`${API}/api/check`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ raw_text: code, entry_name: entryName ? entryName.value || 'UNKNOWN' : 'UNKNOWN' })
+        });
+        const data = await r.json();
+        renderCheckerBanner(data);
+      } catch(e) {
+        showToast('Checker failed — backend unreachable.');
+      } finally {
+        btnCheck.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Check';
+        btnCheck.disabled = false;
+      }
+    });
+  }
+
+  function renderCheckerBanner(data) {
+    if (!checkerBanner) return;
+    const { issues, errors, warnings } = data;
+    checkerBanner.className = 'checker-banner';
+    if (errors > 0) checkerBanner.classList.add('has-errors');
+    else if (warnings > 0) checkerBanner.classList.add('has-warnings');
+    else checkerBanner.classList.add('is-ok');
+    checkerBanner.classList.remove('hidden');
+    const icon = errors > 0 ? '🔴' : warnings > 0 ? '⚠️' : '✅';
+    let html = `<div class="checker-banner-title">${icon} Static Check: ${errors} error(s), ${warnings} warning(s)</div>`;
+    issues.forEach(issue => {
+      const color = issue.severity==='ERROR'?'var(--red)':issue.severity==='WARNING'?'var(--amber)':issue.severity==='OK'?'var(--green)':'var(--blue)';
+      html += `<div class="check-issue-card">
+        <span class="check-issue-sev" style="color:${color}">${issue.severity}: ${issue.rule}</span>
+        <span class="check-issue-msg">${issue.message}</span>
+        ${issue.fix ? `<span class="check-issue-fix">Fix: ${issue.fix}</span>` : ''}
+      </div>`;
+    });
+    checkerBanner.innerHTML = html;
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // ── SESSION HISTORY  (localStorage)
+  // ═══════════════════════════════════════════════════════
+  const HISTORY_KEY = 'sts-session-history';
+
+  function getHistory() {
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
+  }
+  function saveHistory(sessions) {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(sessions.slice(0, 30)));
+  }
+  function addHistoryEntry(title, modeLabel, result) {
+    const sessions = getHistory();
+    sessions.unshift({ id: Date.now(), title, mode: modeLabel, ts: new Date().toLocaleString(), result });
+    saveHistory(sessions);
+  }
+
+  function renderHistoryList() {
+    const list = $('#history-list');
+    if (!list) return;
+    const sessions = getHistory();
+    if (sessions.length === 0) { list.innerHTML = '<div class="history-empty">No sessions yet. Generate something first.</div>'; return; }
+    list.innerHTML = sessions.map(s => `
+      <div class="history-item" data-id="${s.id}">
+        <div class="history-item-title">${s.title}</div>
+        <div class="history-item-meta">
+          <span class="history-mode-badge">${s.mode}</span>
+          <span>${s.ts}</span>
+        </div>
+      </div>`).join('');
+    list.querySelectorAll('.history-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const id = parseInt(item.dataset.id);
+        const s = getHistory().find(x => x.id === id);
+        if (s && s.result) { lastResult = s.result; showTab(activeTab); }
+        closeHistory();
+        showToast(`Loaded: ${s.title}`);
+      });
+    });
+  }
+
+  function openHistory()  { $('#history-drawer').classList.remove('hidden'); $('#history-overlay').classList.remove('hidden'); renderHistoryList(); }
+  function closeHistory() { $('#history-drawer').classList.add('hidden'); $('#history-overlay').classList.add('hidden'); }
+
+  const btnHistory = $('#btn-history');
+  const btnHistoryClose = $('#btn-history-close');
+  const btnClearHistory = $('#btn-clear-history');
+  const historyOverlay  = $('#history-overlay');
+  if (btnHistory)      btnHistory.addEventListener('click', openHistory);
+  if (btnHistoryClose) btnHistoryClose.addEventListener('click', closeHistory);
+  if (historyOverlay)  historyOverlay.addEventListener('click', closeHistory);
+  if (btnClearHistory) btnClearHistory.addEventListener('click', () => { localStorage.removeItem(HISTORY_KEY); renderHistoryList(); });
+
+  // ═══════════════════════════════════════════════════════
+  // ── PDF EXPORT
+  // ═══════════════════════════════════════════════════════
+  const btnExportPDF = $('#btn-export-pdf');
+  if (btnExportPDF) {
+    btnExportPDF.addEventListener('click', () => {
+      if (!lastResult) { showToast('Nothing to export yet.'); return; }
+      const content = getActiveContent();
+      if (!content) { showToast('Switch to a tab with content first.'); return; }
+      const entry = (entryName && entryName.value) ? entryName.value.toUpperCase() : 'STS-OUTPUT';
+      const win = window.open('', '_blank');
+      win.document.write(`<!DOCTYPE html><html><head><title>${entry} — STS Coder</title>
+        <style>body{font-family:monospace;font-size:13px;padding:40px;max-width:900px;margin:0 auto;line-height:1.7}
+        h1{font-size:20px;margin-bottom:8px}pre{white-space:pre-wrap;word-break:break-word}
+        .meta{color:#666;font-size:11px;margin-bottom:24px;border-bottom:1px solid #eee;padding-bottom:12px}</style></head>
+        <body><h1>${entry} — ${activeTab.toUpperCase()}</h1>
+        <div class="meta">Generated by STS Coder v2.0 · IBM z/TPF AI Copilot · ${new Date().toLocaleString()}</div>
+        <pre>${escapeHtml(content)}</pre></body></html>`);
+      win.document.close();
+      setTimeout(() => { win.print(); }, 400);
+    });
+  }
+
+  function getActiveContent() {
+    const panel = $(`#result-${activeTab}`);
+    return panel ? panel.innerText : '';
+  }
+  function escapeHtml(str) {
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── Auto-save to history after successful generation ──
+  const _origRunGen = typeof runGeneration === 'function' ? runGeneration : null;
+  // Hook into result rendering — save after lastResult is set
+  const origShowTab = window.showTab;
+
 })();
