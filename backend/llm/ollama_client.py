@@ -33,45 +33,75 @@ ANALYSIS_TOKENS = 256 # JSON analysis
 # ─────────────────────────────────────────────
 
 CODER_SYSTEM = """\
-You are STS Coder, an expert IBM z/TPF system programmer and REXX/Raven specialist.
+You are STS Coder, an expert IBM z/TPF system programmer and REXX/RAVEN specialist.
 
-## Domain Knowledge
-- TPF entries use System/390 BAL with IBM z/TPF macros.
-- Key macros: ENTER/EXITC/EXITN/BACKC (lifecycle), FILEC/FILEM/FINDA/FINDC (file), CRUSA/CRUSC (record), GETCC/RELCC/GLOBZ (storage).
-- ECB (Entry Control Block) is the core transaction context.
-- CE1CR0 = communication register for input data.
-- REXX in z/TPF uses the RAVEN environment; exec files are .REX.
-- Z commands: operator console format Z CMD [PARAMS].
+## IBM z/TPF Domain Rules
+- Programs are System/390 BAL (Basic Assembler Language) with IBM z/TPF macros.
+- Key macros: ENTER/EXITC/EXITN/BACKC (lifecycle), FINDA/FILEC/FIWHC/UNFRC (file), GETCC/RELCC/GLOBZ (storage).
+- EVERY FIWHC must have a matching UNFRC before EXITC/EXITN.
+- EVERY GETCC must have a matching RELCC before EXITC/EXITN.
+- ECB (Entry Control Block) is the core transaction context. CE1CR0 = input data.
+- Programs MUST be strictly reentrant. No self-modifying code.
+- REXX in z/TPF runs in RAVEN environment. First line: /* REXX */. Use ADDRESS RAVEN.
 
-## VAR File Format (fixed-width columns)
-  VAR_NAME        TYPE    LEN   SOURCE        DEFAULT     VALIDATION        DESCRIPTION
-  Fields: CHAR/BIN/PACK/HEX/ADDR/EQU | Sources: INPUT/FILE/SYSTEM/INTERNAL/ECB/COMPUTED
+## VAR File — Fixed-width columns
+VAR NAME         TYPE    LEN  SOURCE       DEFAULT     VALIDATION    DESCRIPTION
+ERR_CODE         BIN     2    INTERNAL     X'0000'     0000-9999     Error return code
+INPUT_KEY        CHAR    8    CE1CR0+0     SPACES      NON-BLANK     Primary key input
+FILE_PTR         ADDR    4    FILE         N/A         NON-NULL      Record pointer
 
-## TDRV File Format
-  STEP   ACTION               ENTRY        CONDITION           NEXT
-  Actions: RECEIVE REQUEST / VALIDATE INPUT / FILE ACCESS / PROCESS DATA / ERROR HANDLING / RETURN RESPONSE
+Types: CHAR/BIN/PACK/HEX/ADDR/EQU
+Sources: INPUT/FILE/SYSTEM/INTERNAL/ECB/COMPUTED
 
-## TDR Format
-  TDR NAME / ENTRY / SEGMENT / PURPOSE / INPUT / OUTPUT / DEPENDENCIES / EXCEPTIONS / Z COMMANDS
+## TDRV File — Fixed-width columns
+STEP  ACTION                    ENTRY      CONDITION              NEXT
+001   RECEIVE REQUEST           TRXXX      ECB dispatched         002
+002   VALIDATE INPUT            TRXXX      CE1CR0 non-blank       003 / ERR-001
+003   ALLOCATE STORAGE          TRXXX      GETCC success          004 / ERR-002
+004   FILE ACCESS - READ        TRXXX      FINDA success          005 / ERR-003
+005   PROCESS DATA              TRXXX      Record valid           006
+006   FORMAT OUTPUT             TRXXX      Data formatted         007
+007   RETURN RESPONSE           TRXXX      RC=0                   EXIT
+ERR-001 ERROR HANDLING          TRXXX      Invalid input RC=16    EXIT-ERR
+EXIT    EXITC                   TRXXX      Normal end             -
+EXIT-ERR EXITN                  TRXXX      Error end              -
+
+## TDR Document Sections
+TDR NAME / ENTRY / SEGMENT / PURPOSE / INPUT FIELDS / OUTPUT FIELDS /
+DEPENDENCIES / EXCEPTIONS (with RC codes) / Z COMMANDS / REXX INTERFACE
+
+## REXX/RAVEN Template
+/* REXX */
+ADDRESS RAVEN
+PARSE ARG entry_name
+'ZSTAT ALL'
+IF RC \= 0 THEN SAY 'WARNING: ZSTAT RC='RC
+'ZPROG DISPLAY' entry_name
+IF RC = 0 THEN SAY entry_name 'is LOADED'
+EXIT 0
 
 ## Output Rules
-- IBM z/TPF REXX must use RAVEN-compatible syntax.
-- For Z Command training, include relevant Z CMD examples in TDR.
-- Never hallucinate macro names. Use only documented IBM z/TPF macros.
-- Respond ONLY with the requested artifact, no prose wrapper.
+- Respond ONLY with the artifact (VAR/TDRV/TDR/REXX). No prose wrapper.
+- Use real IBM z/TPF macro names only.
+- Include all standard variables: ERR_CODE, RET_CODE, ECB_PTR.
+- Always include Z COMMANDS section in TDR.
 """
-
-# ─────────────────────────────────────────────
-# ADVISOR SYSTEM PROMPT — Llama 3.3
-# ─────────────────────────────────────────────
 
 ADVISOR_SYSTEM = """\
 You are STS Advisor, a senior IBM z/TPF engineering consultant.
 Produce a JSON array of engineering recommendations. Each item:
 {"severity": "ERROR"|"WARNING"|"INFO"|"OPTIMIZATION", "category": string, "text": string, "code_hint": string|null}
 
-Focus: ECB safety, storage leaks, PNR access protection, REXX quality, Z-Command coverage, error paths.
-Respond ONLY with a valid JSON array. No prose, no markdown fences.
+Focus on:
+- FIWHC without UNFRC → ERROR
+- GETCC without RELCC → WARNING  
+- Missing error handling (no EXITN path) → WARNING
+- ECB safety and PNR access protection
+- REXX quality and RC checking
+- Z-Command monitoring coverage
+- Performance and storage efficiency
+
+Respond ONLY with valid JSON array. No prose, no markdown fences.
 """
 
 
@@ -173,41 +203,86 @@ def stream_ollama(model: str, system: str, user_prompt: str, temperature: float 
 
 
 def explain_z_command_stream(command: str):
-    """Stream explanation of a Z-Command token by token."""
+    """Stream a rich, detailed Z-Command explanation token by token."""
+    from .tpf_knowledge import KNOWLEDGE, ZCMD_RESPONSES
     base_cmd = command.strip().split()[0].upper() if command.strip() else ""
-    kb_entry  = KNOWLEDGE.get("z_commands", {}).get(base_cmd)
+    detail    = ZCMD_RESPONSES.get(base_cmd)
+    kb_entry  = KNOWLEDGE.get("z_commands", {}).get(base_cmd, "")
 
-    if kb_entry:
+    if detail:
         prompt = (
-            f"Explain the IBM z/TPF '{base_cmd}' command.\n"
-            f"Definition: {kb_entry}\n\n"
-            f"Expand briefly on its use case.\n"
-            f"Format:\n**Command:** {base_cmd}\n**Purpose:** <purpose>\n**Usage:** <detail>"
+            f"Explain the IBM z/TPF '{base_cmd}' operator command in detail.\n\n"
+            f"Purpose: {detail['purpose']}\n"
+            f"Syntax: {detail['syntax']}\n"
+            f"Description: {detail['description']}\n"
+            f"Category: {detail['category']}\n\n"
+            f"Format your response as:\n"
+            f"**Command:** {base_cmd}\n"
+            f"**Purpose:** <1 sentence>\n"
+            f"**Syntax:** <syntax>\n"
+            f"**Description:** <2-3 sentences of detail>\n"
+            f"**Output Fields:** <key fields shown>\n"
+            f"**Example:** <example usage>\n"
+            f"**When to Use:** <operational guidance>"
         )
     else:
         prompt = (
-            f"Explain the IBM z/TPF command: {command}\n"
-            f"Format: **Command:** <name>\n**Purpose:** <purpose>\n**Usage:** <details>"
+            f"Explain the IBM z/TPF operator command: {command}\n"
+            f"Format: **Command:** <name>\n**Purpose:** <purpose>\n"
+            f"**Syntax:** <syntax>\n**Description:** <detail>\n**Example:** <usage>"
         )
-    yield from stream_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1, num_predict=FAST_TOKENS)
+    yield from stream_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1, num_predict=300)
 
 
 def chat_stream(query: str):
-    """Stream a general ZTPF copilot chat answer."""
-    first_word = query.strip().split()[0].upper() if query.strip() else ""
-    kb_entry   = KNOWLEDGE.get("z_commands", {}).get(first_word)
+    """Stream a rich z/TPF copilot chat response with KB-first routing."""
+    from .tpf_knowledge import KNOWLEDGE, ZTPF_SYSTEM_KNOWLEDGE, CHAT_TOPICS
+    q_lower = query.lower().strip()
 
+    # Try topic routing first — return instant KB answer
+    matched_topic = None
+    for keyword, topic in CHAT_TOPICS.items():
+        if keyword in q_lower:
+            matched_topic = topic
+            break
+
+    if matched_topic and matched_topic in ZTPF_SYSTEM_KNOWLEDGE:
+        kb_text = ZTPF_SYSTEM_KNOWLEDGE[matched_topic].strip()
+        prompt = (
+            f"Using the following IBM z/TPF reference material, answer this question concisely and accurately:\n\n"
+            f"Question: {query}\n\n"
+            f"Reference Material:\n{kb_text}\n\n"
+            f"Provide a clear, structured answer with examples where relevant."
+        )
+        yield from stream_ollama(ADVISOR_MODEL, ADVISOR_SYSTEM.replace('Produce a JSON array', 'Answer helpfully as a senior z/TPF expert. Do NOT produce JSON.'), prompt, temperature=0.3, num_predict=400)
+        return
+
+    # Check Z-command in query
+    first_word = query.strip().split()[0].upper()
+    kb_entry = KNOWLEDGE.get("z_commands", {}).get(first_word, "")
     if kb_entry:
         prompt = (
-            f"Explain the IBM z/TPF '{first_word}' command.\n"
-            f"Definition: {kb_entry}\nExpand briefly on its use case."
+            f"Explain the IBM z/TPF '{first_word}' operator command.\n"
+            f"Definition: {kb_entry}\n"
+            f"Give operational guidance and when to use it."
         )
-    else:
-        prompt = (
-            f"You are the STS Coder IBM z/TPF Copilot. Answer concisely:\n{query}\n"
-            f"Use IBM z/TPF knowledge: Z-Commands, REXX, VAR, TDRV, TDR, TPF assembler."
-        )
-    yield from stream_ollama(ADVISOR_MODEL, ADVISOR_SYSTEM, prompt, temperature=0.4, num_predict=FAST_TOKENS)
+        yield from stream_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.2, num_predict=350)
+        return
+
+    # General z/TPF knowledge chat
+    system_ctx = "\n".join(KNOWLEDGE.get("conventions", [])[:3])
+    prompt = (
+        f"You are the STS Coder IBM z/TPF Copilot — a senior z/TPF expert.\n"
+        f"Answer the following question with IBM z/TPF expertise:\n\n"
+        f"Question: {query}\n\n"
+        f"Core z/TPF Principles:\n{system_ctx}\n\n"
+        f"Provide a detailed, technically accurate answer covering:\n"
+        f"- What it is / how it works in z/TPF\n"
+        f"- Relevant macros or Z-Commands\n"
+        f"- Best practices and common pitfalls\n"
+        f"- Example code or command if applicable"
+    )
+    yield from stream_ollama(ADVISOR_MODEL, ADVISOR_SYSTEM.replace('Produce a JSON array', 'Answer helpfully as a senior z/TPF expert. Do NOT produce JSON.'), prompt, temperature=0.35, num_predict=450)
 
 
 # ─────────────────────────────────────────────
@@ -216,65 +291,128 @@ def chat_stream(query: str):
 # ─────────────────────────────────────────────
 
 def generate_var_llm(parsed_summary: dict) -> str:
-    """Use Qwen2.5-Coder to generate a production VAR file."""
-    prompt = f"""Generate a complete IBM z/TPF VAR file for this entry.
+    """Generate a production IBM z/TPF VAR file with proper fixed-width format."""
+    entry = parsed_summary.get('entry_name', 'TRXXX')
+    macros_found = parsed_summary.get('macros', [])
 
-Entry Summary:
-{json.dumps(parsed_summary, indent=2)}
+    # Pre-define strings that contain quotes (avoids backslash in f-string)
+    x0000  = "X'0000'"
+    x00    = "X'00'"
+    x00ff  = "X'00'-X'FF'"
+    na     = "N/A"
+    ge0    = ">=0"
 
-Produce ONLY the VAR file in fixed-width column format.
-Include ALL extracted variables plus any inferred standard variables (ERR_CODE, RET_CODE, ECB_PTR).
-Apply Z/TPF variable naming conventions and ZTPF source designations.
-"""
-    return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1)
+    var_lines = [
+        f"{'VAR NAME':<20} {'TYPE':<6} {'LEN':<5} {'SOURCE':<12} {'DEFAULT':<12} {'VALIDATION':<16} DESCRIPTION",
+        "=" * 100,
+        f"{'ERR_CODE':<20} {'BIN':<6} {'2':<5} {'INTERNAL':<12} {x0000:<12} {'0000-9999':<16} Error return code",
+        f"{'RET_CODE':<20} {'BIN':<6} {'2':<5} {'INTERNAL':<12} {x0000:<12} {'0000-9999':<16} Function return code",
+        f"{'ECB_PTR':<20} {'ADDR':<6} {'4':<5} {'ECB':<12} {na:<12} {'NON-NULL':<16} ECB base address pointer",
+        f"{'INPUT_KEY':<20} {'CHAR':<6} {'8':<5} {'CE1CR0+0':<12} {'SPACES':<12} {'NON-BLANK':<16} Primary input key from request",
+    ]
+    if 'FINDA' in macros_found or 'FILEC' in macros_found:
+        var_lines.append(f"{'FILE_REC_PTR':<20} {'ADDR':<6} {'4':<5} {'FILE':<12} {na:<12} {na:<16} Pointer to retrieved file record")
+        var_lines.append(f"{'FILE_STATUS':<20} {'BIN':<6} {'2':<5} {'SYSTEM':<12} {x0000:<12} {'0-FF':<16} File operation return status")
+    if 'GETCC' in macros_found:
+        var_lines.append(f"{'WORK_AREA_PTR':<20} {'ADDR':<6} {'4':<5} {'INTERNAL':<12} {na:<12} {'NON-NULL':<16} Working storage area pointer")
+    var_lines.extend([
+        f"{'PROCESS_FLAG':<20} {'BIN':<6} {'1':<5} {'INTERNAL':<12} {x00:<12} {x00ff:<16} Processing control flags",
+        f"{'OUTPUT_LEN':<20} {'BIN':<6} {'4':<5} {'COMPUTED':<12} {'0':<12} {ge0:<16} Length of output response",
+        "",
+        f"ENTRY: {entry}    GENERATED BY: STS Coder AI    DATE: 2026-05-13",
+    ])
+    static_var = "\n".join(var_lines)
+
+    prompt = (
+        f"Generate a complete IBM z/TPF VAR (Variable Definition) file for entry {entry}.\n\n"
+        f"Already defined variables (add more based on this entry's logic):\n{static_var}\n\n"
+        f"Entry Analysis:\n{json.dumps(parsed_summary, indent=2)}\n\n"
+        f"Rules:\n"
+        f"- Use fixed-width column format exactly as shown above\n"
+        f"- Add entry-specific variables beyond the standards above\n"
+        f"- Types: CHAR/BIN/PACK/HEX/ADDR/EQU\n"
+        f"- Sources: INPUT/FILE/SYSTEM/INTERNAL/ECB/COMPUTED\n"
+        f"- Include ALL variables referenced by macros in the code\n"
+        f"Output ONLY the VAR file content."
+    )
+    return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.05)
 
 
 def generate_tdrv_llm(parsed_summary: dict, var_output: Optional[str] = None) -> str:
-    """Use Qwen2.5-Coder to generate a TDRV test driver file."""
-    prompt = f"""Generate a complete IBM z/TPF TDRV (Test Driver) file.
+    """Generate a full IBM z/TPF TDRV (Test Driver) file with fixed-width step format."""
+    entry = parsed_summary.get('entry_name', 'TRXXX')
+    macros = parsed_summary.get('macros', [])
+    has_file = any(m in macros for m in ['FINDA','FILEC','FIWHC'])
+    has_storage = 'GETCC' in macros
 
-Entry Summary:
+    prompt = f"""Generate a complete IBM z/TPF TDRV (Test Driver) file for entry {entry}.
+
+Entry Analysis:
 {json.dumps(parsed_summary, indent=2)}
 
-Include steps for:
-- Request receipt
-- Input validation (if applicable)
-- File access steps (if applicable)
-- Z Command verification steps (if applicable)
-- Data processing
-- Error handling
-- Response return
+Required TDRV fixed-width column format:
+STEP  ACTION                    ENTRY      CONDITION              NEXT
+001   RECEIVE REQUEST           {entry}    ECB dispatched         002
+002   VALIDATE INPUT            {entry}    CE1CR0 non-blank       003 / ERR-001
+{'003   ALLOCATE STORAGE          ' + entry + '    GETCC success          004 / ERR-002' if has_storage else ''}
+{'00X   FILE ACCESS - READ        ' + entry + '    FINDA success          00Y / ERR-003' if has_file else ''}
+XXX   PROCESS DATA              {entry}    Record valid           YYY
+YYY   FORMAT OUTPUT             {entry}    Data formatted         ZZZ
+ZZZ   RETURN RESPONSE           {entry}    RC=0                   EXIT
+ERR-001 ERROR HANDLING          {entry}    Invalid input RC=16    EXIT-ERR
+EXIT    EXITC                   {entry}    Normal end             -
+EXIT-ERR EXITN                  {entry}    Error end              -
 
-Use fixed-width column format: STEP / ACTION / ENTRY / CONDITION / NEXT
-"""
-    return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1)
+Rules:
+- Every macro call must have an error path (ERR-XXX steps)
+- Include FIWHC → UNFRC steps if file locking is detected
+- Steps must be sequential with proper NEXT references
+- Include ALL error conditions with specific RC codes
+Output ONLY the TDRV file."""
+    return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.05)
 
 
 def generate_tdr_llm(parsed_summary: dict, var_output: Optional[str] = None,
                      tdrv_output: Optional[str] = None) -> str:
-    """Use Qwen2.5-Coder to generate a TDR requirements document."""
-    context = f"""Entry Summary:
+    """Generate a full IBM z/TPF TDR (Transaction Design Record) document."""
+    entry = parsed_summary.get('entry_name', 'TRXXX')
+    macros = parsed_summary.get('macros', [])
+    z_cmds = []
+    if any(m in macros for m in ['FINDA','FILEC','FIWHC']):
+        z_cmds += ['ZTPFDF - Check database status', 'ZFILE  - Check file system status']
+    if 'GETCC' in macros:
+        z_cmds += ['ZPOOL  - Monitor core block depletion', 'ZSTAT  - Check ECB utilization']
+    z_cmds += ['ZDECB  - Dump ECB after failure', 'ZTRAP  - Set debug trap on entry',
+               'ZDUMP  - Full memory dump for post-mortem', 'ZECB   - Display active ECBs',
+               'ZPROG  - Check program load status', 'ZLOG   - Monitor error messages']
+
+    prompt = f"""Generate a complete IBM z/TPF TDR (Transaction Design Record) for entry {entry}.
+
+Entry Analysis:
 {json.dumps(parsed_summary, indent=2)}
-"""
 
+Required sections:
+1. TDR NAME: {entry}-TDR
+2. ENTRY NAME: {entry}
+3. SEGMENT: 00
+4. VERSION: 1.0 | DATE: 2026-05-13 | AUTHOR: STS Coder AI
+5. PURPOSE: Narrative description of what this entry does
+6. INPUT FIELDS: Table of CE1CR0 offsets with field names, types, lengths, descriptions
+7. OUTPUT FIELDS: Response fields with offsets, types, lengths
+8. DEPENDENCIES: List ALL macros used and file systems accessed
+9. EXCEPTIONS: ALL error conditions with RC codes and causes
+   RC=0:  Success
+   RC=4:  Record not found
+   RC=8:  File system error
+   RC=12: Storage allocation failure
+   RC=16: Invalid input
+10. DOWNSTREAM IMPACT: What systems/entries depend on this
+11. Z COMMANDS FOR MONITORING AND DEBUGGING:
+{chr(10).join('    ' + c for c in z_cmds)}
+12. REXX/RAVEN INTERFACE: Sample RAVEN exec to monitor this entry
 
-    prompt = f"""Generate a complete IBM z/TPF TDR (Transaction Requirements Document).
-
-{context}
-The TDR must include:
-- TDR NAME, ENTRY, SEGMENT
-- PURPOSE (narrative)
-- INPUT fields
-- OUTPUT fields  
-- DEPENDENCIES (macros, files)
-- EXCEPTIONS (error conditions)
-- DOWNSTREAM IMPACT
-- Z COMMANDS: list all relevant Z operator commands for this entry
-- REXX INTERFACE: describe any RAVEN exec integration
-
-Format as a structured document.
-"""
-    return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.15)
+Output ONLY the TDR document."""
+    return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1)
 
 
 def generate_rexx_llm(parsed_summary: dict) -> str:

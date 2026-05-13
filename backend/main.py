@@ -241,10 +241,10 @@ def get_models():
 
 @app.get("/api/stream/zcmd")
 def stream_zcmd(command: str = ""):
-    """SSE stream: explain a Z-Command. KB-first (instant), LLM fallback."""
-    from llm.tpf_knowledge import KNOWLEDGE
+    """SSE stream: explain a Z-Command. Rich KB-first, LLM fallback for unknowns."""
+    from llm.tpf_knowledge import KNOWLEDGE, ZCMD_RESPONSES
     base_cmd = command.strip().split()[0].upper() if command.strip() else ""
-    kb_entry = KNOWLEDGE.get("z_commands", {}).get(base_cmd)
+    detail   = ZCMD_RESPONSES.get(base_cmd)
 
     def generate_kb(text):
         yield f"data: {json.dumps({'token': text, 'done': False})}\n\n"
@@ -256,12 +256,32 @@ def stream_zcmd(command: str = ""):
         yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+    if detail:
+        # Rich instant response from ZCMD_RESPONSES knowledge base
+        output_fields = "\n".join(f"  • {f}" for f in detail.get("output_fields", []))
+        text = (
+            f"**Command:** {base_cmd}\n"
+            f"**Purpose:** {detail['purpose']}\n"
+            f"**Category:** {detail['category']}\n\n"
+            f"**Syntax:** `{detail['syntax']}`\n\n"
+            f"**Description:**\n{detail['description']}\n\n"
+            f"**Output Fields:**\n{output_fields}\n\n"
+            f"**Example:** `{detail['example']}`\n\n"
+            f"**Operational Guidance:** Use this command for monitoring and diagnosing "
+            f"the {detail['category'].lower()} aspect of your z/TPF system. "
+            f"Check output periodically and correlate with ZSTAT and ZLOG for full picture."
+        )
+        return StreamingResponse(generate_kb(text), media_type="text/event-stream", headers=headers)
+
+    # Fallback: check simple KB, then LLM
+    kb_entry = KNOWLEDGE.get("z_commands", {}).get(base_cmd)
     if kb_entry:
         text = (
             f"**Command:** {base_cmd}\n"
             f"**Purpose:** {kb_entry}\n\n"
             f"**Usage:** Enter `{base_cmd}` at the z/TPF operator console.\n"
-            f"This is an IBM z/TPF diagnostic Z-Command."
+            f"This is an IBM z/TPF operator Z-Command."
         )
         return StreamingResponse(generate_kb(text), media_type="text/event-stream", headers=headers)
 
@@ -270,30 +290,14 @@ def stream_zcmd(command: str = ""):
 
 @app.get("/api/stream/chat")
 def stream_chat(query: str = ""):
-    """SSE stream: general ZTPF copilot chat token-by-token."""
-    from llm.tpf_knowledge import KNOWLEDGE
-    first_word = query.strip().split()[0].upper() if query.strip() else ""
-    kb_entry = KNOWLEDGE.get("z_commands", {}).get(first_word)
-
-    def generate_kb(text):
-        yield f"data: {json.dumps({'token': text, 'done': False})}\n\n"
-        yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
-
-    def generate_llm():
+    """SSE stream: intelligent z/TPF copilot chat — KB-routed, topic-aware."""
+    def generate():
         for token in chat_stream(query):
             yield f"data: {json.dumps({'token': token, 'done': False})}\n\n"
         yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-    if kb_entry:
-        text = (
-            f"**Command:** {first_word}\n"
-            f"**Purpose:** {kb_entry}\n\n"
-            f"**Usage:** Enter `{first_word}` at the z/TPF operator console."
-        )
-        return StreamingResponse(generate_kb(text), media_type="text/event-stream", headers=headers)
-
-    return StreamingResponse(generate_llm(), media_type="text/event-stream", headers=headers)
+    return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
 
 
 @app.post("/api/analyze", response_model=AnalysisResponse)
