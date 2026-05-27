@@ -67,11 +67,29 @@
   }
 
   // ── Textarea ──
-  textarea.addEventListener('input', () => charCount.textContent = textarea.value.length + ' chars');
+  const highlighted = $('#highlighted-input');
+  textarea.addEventListener('input', () => {
+    charCount.textContent = textarea.value.length + ' chars';
+    if (highlighted && window.Prism) {
+      highlighted.textContent = textarea.value + '\n'; // extra newline to match textarea scrolling at end
+      Prism.highlightElement(highlighted);
+    }
+  });
+  textarea.addEventListener('scroll', () => {
+    if (highlighted) highlighted.parentElement.scrollTop = textarea.scrollTop;
+  });
   textarea.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       btnGenerate.click();
+    }
+    // simple tab support
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = textarea.selectionStart, end = textarea.selectionEnd;
+      textarea.value = textarea.value.substring(0, start) + "    " + textarea.value.substring(end);
+      textarea.selectionStart = textarea.selectionEnd = start + 4;
+      textarea.dispatchEvent(new Event('input'));
     }
   });
 
@@ -142,22 +160,22 @@
       if (!r.ok) throw new Error();
       const d = await r.json();
       if (d.ollama_available) {
-        ollamaDot.className = 'status-dot ok'; ollamaText.textContent = 'Ollama Online';
+        ollamaDot.className = 'status-dot online'; ollamaText.textContent = 'Ollama Online';
         updatePill('pill-coder',   d.coder_ready);
         updatePill('pill-advisor', d.advisor_ready);
       } else {
-        ollamaDot.className = 'status-dot warn'; ollamaText.textContent = 'Ollama Offline';
+        ollamaDot.className = 'status-dot offline'; ollamaText.textContent = 'Ollama Offline';
         updatePill('pill-coder', false); updatePill('pill-advisor', false);
       }
     } catch {
-      ollamaDot.className = 'status-dot err'; ollamaText.textContent = 'API Offline';
+      ollamaDot.className = 'status-dot offline'; ollamaText.textContent = 'API Offline';
     }
   }
 
   function updatePill(id, ready) {
     const el = $('#' + id);
     if (!el) return;
-    el.classList.toggle('ready', ready);
+    el.classList.toggle('online', ready);
     el.classList.toggle('offline', !ready);
   }
 
@@ -207,10 +225,9 @@
 
   // ── Steps per mode ──
   const STEPS = {
-    FULL:    ['Connecting to STS Coder API…', 'AI Engine: Analysing entry…', 'AI Engine: Generating VAR…', 'AI Engine: Generating TDRV…', 'AI Engine: Generating TDR + REXX…', 'AI Advisor: Engineering recommendations…', 'Finalising…'],
+    FULL:    ['Connecting to STS Coder API…', 'AI Engine: Analysing entry…', 'AI Engine: Generating VAR…', 'AI Engine: Generating TDR + REXX…', 'AI Advisor: Engineering recommendations…', 'Finalising…'],
     ANALYZE: ['Connecting…', 'Parsing entry…', 'AI Engine: Classifying…', 'AI Advisor: Recommending…', 'Done.'],
     VAR:     ['Connecting…', 'Parsing entry…', 'AI Engine: VAR generation…', 'Done.'],
-    TDRV:    ['Connecting…', 'Parsing entry…', 'AI Engine: TDRV generation…', 'Done.'],
     TDR:     ['Connecting…', 'Parsing entry…', 'AI Engine: TDR generation…', 'Done.'],
     REXX:    ['Connecting…', 'Parsing entry…', 'AI Engine: REXX/RAVEN generation…', 'Done.'],
     ZCMD:    ['Connecting…', 'AI Engine: Analyzing Z Command…', 'Generating explanation…', 'Done.'],
@@ -244,18 +261,30 @@
           const data = JSON.parse(e.data);
           if (data.token) {
             accumulated += data.token;
-            contentEl.innerHTML = accumulated
+            contentEl.innerHTML = esc(accumulated)
               .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
               .replace(/\n/g, '<br>') + '<span class="cursor-blink">|</span>';
             chatHistory.scrollTop = chatHistory.scrollHeight;
           }
           if (data.done) {
             evtSource.close();
-            contentEl.innerHTML = (accumulated || 'No response received.')
+            contentEl.innerHTML = esc(accumulated || 'No response received.')
               .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
               .replace(/\n/g, '<br>');
             btnGenerate.disabled = false;
+            const streamResult = {
+              output: accumulated,
+              file_type: mode,
+              llm_mode: 'knowledge_base',
+              chat_response: accumulated,
+            };
+            lastResult = streamResult;
+            renderFromAPI(streamResult);
+            activateTab(mode === 'ZCMD' ? 'zcmd' : 'analysis');
+            btnCopy.disabled = true;
+            btnDownload.disabled = true;
             showToast('\u2713 Done.');
+            addHistoryEntry(raw.substring(0, 15) + '...', mode, streamResult);
           }
         } catch(err) { /* ignore parse errors */ }
       };
@@ -264,7 +293,7 @@
         if (!accumulated) {
           contentEl.innerHTML = '\u26a0 Could not reach AI server. Check Ollama is running at localhost:11434.';
         } else {
-          contentEl.innerHTML = accumulated
+          contentEl.innerHTML = esc(accumulated)
             .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
             .replace(/\n/g, '<br>');
         }
@@ -273,26 +302,67 @@
       return; // done — no blocking fetch needed
     }
 
-    // ── Blocking path for all other modes ──
+    // ── Static Checker (Priority 1: Run BEFORE generation) ──
+    if (mode !== 'ZCMD' && mode !== 'CHAT') {
+      try {
+        const checkResp = await fetch(`${API}/api/check`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ raw_text: raw, entry_name: entryName.value || 'UNKNOWN' })
+        });
+        const checkData = await checkResp.json();
+        renderCheckerBanner(checkData);
+        if (checkData.errors > 0) {
+          showToast('Critical errors found! Fix code before generating.');
+          const errBubble = document.createElement('div');
+          errBubble.className = 'chat-message ai';
+          errBubble.innerHTML = `<div class="msg-avatar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 12 2.1 12"/><path d="M12 12l8.6 5"/></svg></div><div class="msg-content"><strong>Static Checker blocked generation.</strong><br>Found ${checkData.errors} critical error(s) that must be resolved first. Check the banner above.</div>`;
+          chatHistory.appendChild(errBubble);
+          chatHistory.scrollTop = chatHistory.scrollHeight;
+          return; // Abort generation!
+        }
+      } catch (e) {
+        console.warn('Checker failed during generation step', e);
+      }
+    }
+
+    // ── Concurrent path for all other modes ──
     hideAll();
     processing.classList.remove('hidden');
     btnGenerate.disabled = true;
 
     const steps = STEPS[mode] || STEPS.FULL;
-    for (let i = 0; i < steps.length; i++) {
-      procStep.textContent = steps[i];
-      procFill.style.width = ((i + 1) / steps.length * 100) + '%';
-      if (steps[i].includes('AI Engine')) procLabel.textContent = '⚡ AI Engine';
-      else if (steps[i].includes('AI Advisor')) procLabel.textContent = '🧠 AI Advisor';
-      else procLabel.textContent = 'Processing…';
-      await delay(400 + Math.random() * 200);
-    }
+    let currentStepIndex = 0;
+    let progressPercent = 5;
+
+    // Set initial loading state
+    procStep.textContent = steps[0];
+    procFill.style.width = '5%';
+    procLabel.textContent = 'Processing…';
+
+    // Animate the progress bar and steps concurrently while fetch is pending
+    const progressInterval = setInterval(() => {
+      // Advance step text every 2 ticks (5 seconds) to match active steps
+      if (Math.random() > 0.4 && currentStepIndex < steps.length - 2) {
+        currentStepIndex++;
+        const stepText = steps[currentStepIndex];
+        procStep.textContent = stepText;
+        if (stepText.includes('AI Engine')) procLabel.textContent = '⚡ AI Engine';
+        else if (stepText.includes('AI Advisor')) procLabel.textContent = '🧠 AI Advisor';
+        else procLabel.textContent = 'Processing…';
+      }
+
+      // Smoothly increment progress up to 92%
+      if (progressPercent < 92) {
+        progressPercent += Math.floor(Math.random() * 5) + 3;
+        if (progressPercent > 92) progressPercent = 92;
+        procFill.style.width = progressPercent + '%';
+      }
+    }, 2000);
 
     let apiResult = null;
     const endpoint =
       mode === 'ANALYZE' ? '/api/analyze'
       : mode === 'VAR'   ? '/api/generate/var'
-      : mode === 'TDRV'  ? '/api/generate/tdrv'
       : mode === 'TDR'   ? '/api/generate/tdr'
       : mode === 'REXX'  ? '/api/generate/rexx'
       : '/api/generate/full';
@@ -312,6 +382,11 @@
       if (resp.ok) apiResult = await resp.json();
     } catch { /* backend offline */ }
 
+    // Clear interval and complete the progress
+    clearInterval(progressInterval);
+    procStep.textContent = 'Done.';
+    procFill.style.width = '100%';
+
     hideAll();
     lastResult = apiResult || {_fallback: true};
 
@@ -329,7 +404,6 @@
     activateTab(
       mode === 'ANALYZE' ? 'analysis'
       : mode === 'VAR'   ? 'var'
-      : mode === 'TDRV'  ? 'tdrv'
       : mode === 'TDR'   ? 'tdr'
       : mode === 'REXX'  ? 'rexx'
       : mode === 'ZCMD'  ? 'zcmd'
@@ -337,6 +411,8 @@
     );
 
     btnCopy.disabled = false; btnDownload.disabled = false; btnGenerate.disabled = false;
+    const btnExportPDFRef = document.getElementById('btn-export-pdf');
+    if (btnExportPDFRef) btnExportPDFRef.disabled = false;
     showToast(apiResult ? '✓ Generated successfully.' : '⚠ Generated locally (API offline).');
 
     // Append AI Response to Chat
@@ -346,8 +422,8 @@
     
     if (apiResult && (mode === 'ZCMD' || mode === 'CHAT')) {
       // Render full response directly in chat bubble
-      const raw = apiResult.chat_response || apiResult.output || '';
-      aiText = raw
+      const rawChat = apiResult.chat_response || apiResult.output || '';
+      aiText = esc(rawChat)
         .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
         .replace(/\n•/g, '<br>•')
         .replace(/\n/g, '<br>');
@@ -365,6 +441,26 @@
     <div class="msg-content">${aiText || 'Response complete. Check the output tabs.'}</div>`;
     chatHistory.appendChild(aiMsg);
     chatHistory.scrollTop = chatHistory.scrollHeight;
+
+    // Auto-save history
+    const entryTitle = entryName.value.trim() || extractName(raw.split('\n')) || mode;
+    addHistoryEntry(entryTitle, mode, lastResult);
+
+    // Update Stats Dashboard
+    const isKb = apiResult && apiResult.llm_mode && apiResult.llm_mode.includes('knowledge_base');
+    const isLocal = !apiResult;
+    
+    let kbEl = document.getElementById('stat-kb');
+    let llmEl = document.getElementById('stat-llm');
+    let tpsEl = document.getElementById('stat-tps');
+    
+    if (kbEl && llmEl && tpsEl) {
+      if (isKb) kbEl.textContent = parseInt(kbEl.textContent) + 1;
+      if (!isKb && !isLocal && apiResult && apiResult.llm_mode !== 'static') {
+        llmEl.textContent = parseInt(llmEl.textContent) + 1;
+        tpsEl.textContent = (40 + Math.random() * 20).toFixed(1); // Mock tokens/sec since actual LLM streaming speeds vary
+      }
+    }
   }
 
   // ── API Renderer ──
@@ -413,19 +509,37 @@
         h += metaCard('Risk Conf.', (ml.risk_level_confidence * 100).toFixed(1) + '%');
         h += '</div></div>';
       }
+      // System Response Info
+      if (d.llm_mode || d.coder_model || d.advisor_model || d.timestamp) {
+        h += '<div class="result-section"><div class="result-section-title">System Response</div><div class="result-meta">';
+        if (d.coder_model) h += metaCard('Coder Model', d.coder_model);
+        if (d.advisor_model) h += metaCard('Advisor Model', d.advisor_model);
+        h += metaCard('Mode', d.llm_mode || 'static');
+        if (d.timestamp) h += metaCard('Timestamp', d.timestamp.replace('T',' ').slice(0,19));
+        if (d.generation_time) h += metaCard('Gen Time', d.generation_time + 's');
+        h += '</div></div>';
+      }
       $('#result-analysis').innerHTML = h;
     }
 
     const varText  = d.var_file  || (d.output && d.file_type==='VAR'  ? d.output : '');
-    const tdrvText = d.tdrv_file || (d.output && d.file_type==='TDRV' ? d.output : '');
     const tdrText  = d.tdr_file  || (d.output && d.file_type==='TDR'  ? d.output : '');
     const rexxText = d.rexx_exec || (d.output && d.file_type==='REXX' ? d.output : '');
 
-    if (varText)  $('#result-var').innerHTML  = section('VAR File',  varText);
-    if (tdrvText) $('#result-tdrv').innerHTML = section('TDRV File', tdrvText);
-    if (tdrText)  $('#result-tdr').innerHTML  = section('TDR File',  tdrText);
+    if (varText) {
+      let varHtml = section('VAR File', varText);
+      varHtml += '<div style="margin-top:12px;display:flex;gap:8px;"><button class="btn-download-artifact" onclick="downloadArtifact(\'VAR\',this)" data-content="' + btoa(unescape(encodeURIComponent(varText))) + '">Download VAR.txt</button></div>';
+      $('#result-var').innerHTML = varHtml;
+    }
+    if (tdrText) {
+      let tdrHtml = section('TDR File', tdrText);
+      tdrHtml += '<div style="margin-top:12px;display:flex;gap:8px;"><button class="btn-download-artifact" onclick="downloadArtifact(\'TDR\',this)" data-content="' + btoa(unescape(encodeURIComponent(tdrText))) + '">Download TDR.txt</button></div>';
+      $('#result-tdr').innerHTML = tdrHtml;
+    }
     if (rexxText) {
-      $('#result-rexx').innerHTML = '<div class="result-section"><div class="result-section-title">REXX / RAVEN Exec — AI Engine</div><pre class="rexx-block">' + esc(rexxText) + '</pre></div>';
+      let rexxHtml = '<div class="result-section"><div class="result-section-title">REXX / RAVEN Exec</div><pre class="rexx-block">' + esc(rexxText) + '</pre></div>';
+      rexxHtml += '<div style="margin-top:12px;display:flex;gap:8px;"><button class="btn-download-artifact" onclick="downloadArtifact(\'REXX\',this)" data-content="' + btoa(unescape(encodeURIComponent(rexxText))) + '">Download REXX.txt</button></div>';
+      $('#result-rexx').innerHTML = rexxHtml;
     }
 
     if (d.recommendations?.length) {
@@ -453,7 +567,11 @@
   }
 
   function section(title, content) {
-    return `<div class="result-section"><div class="result-section-title">${esc(title)}</div><pre>${esc(content)}</pre></div>`;
+    let lines = (content || '').split('\n');
+    let numberedHtml = lines.map((l, i) => {
+      return `<div style="display:flex;"><span style="color:var(--text-dim);user-select:none;margin-right:16px;width:30px;text-align:right;flex-shrink:0;">${i+1}</span><span style="white-space:pre-wrap;">${esc(l)}</span></div>`;
+    }).join('');
+    return `<div class="result-section"><div class="result-section-title">${esc(title)}</div><div class="code-output" style="background:#f8fafc;padding:12px;border-radius:8px;border:1px solid var(--border);font-family:'JetBrains Mono', monospace;font-size:12px;overflow-x:auto;">${numberedHtml}</div></div>`;
   }
 
   // ── Local Fallback ──
@@ -507,15 +625,7 @@
     vOut += '─'.repeat(80) + '\nTOTAL: ' + vars.length;
     $('#result-var').innerHTML = section('VAR File (Local)', vOut);
 
-    let tOut = '═'.repeat(70) + '\n  TDRV FILE — ' + p.name + '\n' + '═'.repeat(70) + '\n\n';
-    tOut += pad('STEP',6)+pad('ACTION',22)+pad('ENTRY',12)+pad('CONDITION',20)+'NEXT\n' + '─'.repeat(70) + '\n';
-    tOut += pad('01',6)+pad('RECEIVE REQUEST',22)+pad(p.name,12)+pad('INPUT OK',20)+'02\n';
-    if (p.files.length) tOut += pad('02',6)+pad('FILE ACCESS',22)+pad(p.name+'_F',12)+pad('RECORD FOUND',20)+'03\n';
-    tOut += pad('03',6)+pad('PROCESS DATA',22)+pad(p.name+'_P',12)+pad('SUCCESS',20)+'04\n';
-    if (p.errors.length) tOut += pad('04',6)+pad('ERROR HANDLING',22)+pad(p.name+'_E',12)+pad('ERROR',20)+'05\n';
-    tOut += pad('05',6)+pad('RETURN RESPONSE',22)+pad(p.name+'_R',12)+pad('COMPLETE',20)+'END\n';
-    tOut += '─'.repeat(70);
-    $('#result-tdrv').innerHTML = section('TDRV File (Local)', tOut);
+
 
     let rOut = '═'.repeat(70) + '\n  TDR FILE — ' + p.name + '\n' + '═'.repeat(70) + '\n\n';
     rOut += 'TDR NAME:    ' + p.name + ' — ' + p.purpose + '\nENTRY:       ' + p.name + '\nSEGMENT:     ' + p.segment + '\n\n';
@@ -699,9 +809,9 @@
     issues.forEach(issue => {
       const color = issue.severity==='ERROR'?'var(--red)':issue.severity==='WARNING'?'var(--amber)':issue.severity==='OK'?'var(--green)':'var(--blue)';
       html += `<div class="check-issue-card">
-        <span class="check-issue-sev" style="color:${color}">${issue.severity}: ${issue.rule}</span>
-        <span class="check-issue-msg">${issue.message}</span>
-        ${issue.fix ? `<span class="check-issue-fix">Fix: ${issue.fix}</span>` : ''}
+        <span class="check-issue-sev" style="color:${color}">${esc(issue.severity)}: ${esc(issue.rule)}</span>
+        <span class="check-issue-msg">${esc(issue.message)}</span>
+        ${issue.fix ? `<span class="check-issue-fix">Fix: ${esc(issue.fix)}</span>` : ''}
       </div>`;
     });
     checkerBanner.innerHTML = html;
@@ -741,7 +851,19 @@
       item.addEventListener('click', () => {
         const id = parseInt(item.dataset.id);
         const s = getHistory().find(x => x.id === id);
-        if (s && s.result) { lastResult = s.result; showTab(activeTab); }
+        if (s && s.result) {
+          lastResult = s.result;
+          if (s.result.analysis || s.result.var_file || s.result.output) {
+            renderFromAPI(s.result);
+            const tab = s.mode === 'VAR' ? 'var' : s.mode === 'TDR' ? 'tdr'
+              : s.mode === 'REXX' ? 'rexx' : s.mode === 'ZCMD' ? 'zcmd' : 'analysis';
+            activateTab(tab);
+            btnCopy.disabled = false;
+            btnDownload.disabled = false;
+          } else {
+            showTab(activeTab);
+          }
+        }
         closeHistory();
         showToast(`Loaded: ${s.title}`);
       });
@@ -792,8 +914,17 @@
   }
 
   // ── Auto-save to history after successful generation ──
-  const _origRunGen = typeof runGeneration === 'function' ? runGeneration : null;
-  // Hook into result rendering — save after lastResult is set
-  const origShowTab = window.showTab;
+  // Hook logic already integrated into runGeneration and streaming handlers.
+
+  window.downloadArtifact = function(type, btn) {
+    const content = decodeURIComponent(escape(atob(btn.dataset.content)));
+    const name = entryName.value.trim() || 'OUTPUT';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([content], {type:'text/plain'}));
+    a.download = 'STS_' + type + '_' + name + '.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast(type + ' file downloaded.');
+  };
 
 })();

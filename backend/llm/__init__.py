@@ -7,6 +7,7 @@ from .ollama_client import (
     generate_tdrv_llm,
     generate_tdr_llm,
     generate_rexx_llm,
+    generate_rexx_static,
     generate_recommendations_llm,
     analyze_entry_llm,
     explain_z_command_llm,
@@ -14,6 +15,7 @@ from .ollama_client import (
     chat_stream,
     CODER_MODEL,
     ADVISOR_MODEL,
+    CHAT_SYSTEM,
 )
 
 __all__ = [
@@ -24,9 +26,14 @@ __all__ = [
     "generate_tdrv_llm",
     "generate_tdr_llm",
     "generate_rexx_llm",
+    "generate_rexx_static",
     "generate_recommendations_llm",
     "analyze_entry_llm",
     "explain_z_command_llm",
+    "explain_z_command_stream",
+    "chat_stream",
     "CODER_MODEL",
     "ADVISOR_MODEL",
+    "CHAT_SYSTEM",
 ]
+

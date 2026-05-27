@@ -4,14 +4,13 @@ STS Coder — FastAPI Backend Server  (v2.0 — Dual-Model LLM)
 Travelport Smart TPF System Coder API
 
 Models:
-  Qwen2.5-Coder  → IBM REXX, VAR, TDRV, TDR generation (ZTPF Z Command trained)
+  Qwen2.5-Coder  → IBM REXX, VAR, TDR generation (ZTPF Z Command trained)
   Llama 3.3      → Engineering recommendations & risk narrative
   Reinforcement  → Coder outputs feed Advisor for cross-model refinement
 
 Endpoints:
   POST /api/analyze            — Analyze TPF entry (static + LLM)
   POST /api/generate/var       — Generate VAR file (LLM-powered)
-  POST /api/generate/tdrv      — Generate TDRV file (LLM-powered)
   POST /api/generate/tdr       — Generate TDR file (LLM-powered)
   POST /api/generate/rexx      — Generate REXX/RAVEN exec (LLM-powered)
   POST /api/generate/full      — Full engineering pack (dual-model reinforcement)
@@ -45,7 +44,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from parser.tpf_parser import parse_tpf_entry
 from generators.var_generator import generate_var_file
-from generators.tdrv_generator import generate_tdrv_file
+
 from generators.tdr_generator import generate_tdr_file
 from analyzer.entry_analyzer import generate_analysis, generate_recommendations
 from llm import (
@@ -53,7 +52,7 @@ from llm import (
     list_available_models,
     run_full_pipeline_llm,
     generate_var_llm,
-    generate_tdrv_llm,
+
     generate_tdr_llm,
     generate_rexx_llm,
     generate_recommendations_llm,
@@ -61,6 +60,7 @@ from llm import (
     explain_z_command_llm,
     explain_z_command_stream,
     chat_stream,
+    generate_rexx_static,
     CODER_MODEL,
     ADVISOR_MODEL,
 )
@@ -88,6 +88,44 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+import hashlib
+from threading import Lock
+
+# ═══════════════════════════════════════════
+# IN-MEMORY CACHE FOR LATENCY REDUCTION
+# ═══════════════════════════════════════════
+class ResponseCache:
+    def __init__(self):
+        self._cache = {}
+        self._lock = Lock()
+
+    def get(self, raw_text: str, endpoint: str, mode: str, use_llm: bool):
+        sanitized = raw_text.strip()
+        key = (hashlib.sha256(sanitized.encode("utf-8")).hexdigest(), endpoint, mode, use_llm)
+        with self._lock:
+            val = self._cache.get(key)
+            if val is not None:
+                log.info(f"[CACHE DEBUG GET] HIT for key {key}")
+            else:
+                log.info(f"[CACHE DEBUG GET] MISS for key {key}. Cache keys currently: {list(self._cache.keys())}")
+            return val
+
+    def set(self, raw_text: str, endpoint: str, mode: str, use_llm: bool, value):
+        sanitized = raw_text.strip()
+        key = (hashlib.sha256(sanitized.encode("utf-8")).hexdigest(), endpoint, mode, use_llm)
+        with self._lock:
+            if len(self._cache) >= 100:
+                oldest = next(iter(self._cache))
+                self._cache.pop(oldest, None)
+            self._cache[key] = value
+            log.info(f"[CACHE DEBUG SET] Stored key {key}")
+
+    def clear(self):
+        with self._lock:
+            self._cache.clear()
+
+GLOBAL_CACHE = ResponseCache()
 
 
 # ═══════════════════════════════════════════
@@ -137,7 +175,7 @@ class FullPackResponse(BaseModel):
     analysis: dict
     recommendations: list[dict]
     var_file: str
-    tdrv_file: str
+
     tdr_file: str
     rexx_exec: str | None = None
     ml_prediction: dict | None = None
@@ -181,6 +219,7 @@ def _parsed_to_summary(parsed) -> dict:
             "labels": len(parsed.labels),
         },
         "macros_called": [m.name for m in parsed.macros],
+        "macros": [m.name for m in parsed.macros],
         "file_references": parsed.file_ops,
         "ecb_references": parsed.ecb_refs,
         "labels": parsed.labels,
@@ -332,49 +371,12 @@ def zcmd_list():
 @app.get("/api/stream/zcmd")
 def stream_zcmd(command: str = ""):
     """SSE stream: explain a Z-Command. Rich KB-first, LLM fallback for unknowns."""
-    from llm.tpf_knowledge import KNOWLEDGE, ZCMD_RESPONSES
-    base_cmd = command.strip().split()[0].upper() if command.strip() else ""
-    detail   = ZCMD_RESPONSES.get(base_cmd)
-
-    def generate_kb(text):
-        yield f"data: {json.dumps({'token': text, 'done': False})}\n\n"
-        yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
-
     def generate_llm():
         for token in explain_z_command_stream(command):
             yield f"data: {json.dumps({'token': token, 'done': False})}\n\n"
         yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-
-    if detail:
-        # Rich instant response from ZCMD_RESPONSES knowledge base
-        output_fields = "\n".join(f"  • {f}" for f in detail.get("output_fields", []))
-        text = (
-            f"**Command:** {base_cmd}\n"
-            f"**Purpose:** {detail['purpose']}\n"
-            f"**Category:** {detail['category']}\n\n"
-            f"**Syntax:** `{detail['syntax']}`\n\n"
-            f"**Description:**\n{detail['description']}\n\n"
-            f"**Output Fields:**\n{output_fields}\n\n"
-            f"**Example:** `{detail['example']}`\n\n"
-            f"**Operational Guidance:** Use this command for monitoring and diagnosing "
-            f"the {detail['category'].lower()} aspect of your z/TPF system. "
-            f"Check output periodically and correlate with ZSTAT and ZLOG for full picture."
-        )
-        return StreamingResponse(generate_kb(text), media_type="text/event-stream", headers=headers)
-
-    # Fallback: check simple KB, then LLM
-    kb_entry = KNOWLEDGE.get("z_commands", {}).get(base_cmd)
-    if kb_entry:
-        text = (
-            f"**Command:** {base_cmd}\n"
-            f"**Purpose:** {kb_entry}\n\n"
-            f"**Usage:** Enter `{base_cmd}` at the z/TPF operator console.\n"
-            f"This is an IBM z/TPF operator Z-Command."
-        )
-        return StreamingResponse(generate_kb(text), media_type="text/event-stream", headers=headers)
-
     return StreamingResponse(generate_llm(), media_type="text/event-stream", headers=headers)
 
 
@@ -393,6 +395,11 @@ def stream_chat(query: str = ""):
 @app.post("/api/analyze", response_model=AnalysisResponse)
 def analyze_entry(req: TPFEntryRequest):
     """Analyze a TPF entry — static + optional LLM (Qwen2.5-Coder + Llama 3.3)."""
+    cached = GLOBAL_CACHE.get(req.raw_text, "analyze", req.mode, req.use_llm)
+    if cached:
+        log.info("[CACHE HIT] Serving /api/analyze from in-memory cache")
+        return cached
+
     try:
         parsed = parse_tpf_entry(req.raw_text, req.entry_name, req.segment)
         analysis = generate_analysis(parsed)
@@ -416,7 +423,7 @@ def analyze_entry(req: TPFEntryRequest):
 
         final_recs = llm_recs if llm_recs else recs
 
-        return AnalysisResponse(
+        resp = AnalysisResponse(
             analysis=analysis,
             recommendations=final_recs,
             ml_prediction=ml,
@@ -424,6 +431,8 @@ def analyze_entry(req: TPFEntryRequest):
             llm_mode=llm_mode,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
+        GLOBAL_CACHE.set(req.raw_text, "analyze", req.mode, req.use_llm, resp)
+        return resp
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -431,6 +440,11 @@ def analyze_entry(req: TPFEntryRequest):
 @app.post("/api/generate/var", response_model=GenerateResponse)
 def gen_var(req: TPFEntryRequest):
     """Generate VAR file — Qwen2.5-Coder (LLM) or static fallback."""
+    cached = GLOBAL_CACHE.get(req.raw_text, "var", req.mode, req.use_llm)
+    if cached:
+        log.info("[CACHE HIT] Serving /api/generate/var from in-memory cache")
+        return cached
+
     try:
         parsed = parse_tpf_entry(req.raw_text, req.entry_name, req.segment)
         llm_mode = "static"
@@ -446,49 +460,30 @@ def gen_var(req: TPFEntryRequest):
         if not output:
             output = generate_var_file(parsed)
 
-        return GenerateResponse(
+        resp = GenerateResponse(
             output=output,
             file_type="VAR",
             entry_name=parsed.name,
             llm_mode=llm_mode,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
+        GLOBAL_CACHE.set(req.raw_text, "var", req.mode, req.use_llm, resp)
+        return resp
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/generate/tdrv", response_model=GenerateResponse)
-def gen_tdrv(req: TPFEntryRequest):
-    """Generate TDRV file — Qwen2.5-Coder (LLM) or static fallback."""
-    try:
-        parsed = parse_tpf_entry(req.raw_text, req.entry_name, req.segment)
-        llm_mode = "static"
-        output = ""
 
-        if req.use_llm and is_ollama_available():
-            try:
-                output = generate_tdrv_llm(_parsed_to_summary(parsed))
-                llm_mode = f"qwen2.5-coder"
-            except Exception as e:
-                log.warning(f"LLM TDRV failed: {e}")
-
-        if not output:
-            output = generate_tdrv_file(parsed)
-
-        return GenerateResponse(
-            output=output,
-            file_type="TDRV",
-            entry_name=parsed.name,
-            llm_mode=llm_mode,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/generate/tdr", response_model=GenerateResponse)
 def gen_tdr(req: TPFEntryRequest):
     """Generate TDR file — Qwen2.5-Coder (LLM) or static fallback."""
+    cached = GLOBAL_CACHE.get(req.raw_text, "tdr", req.mode, req.use_llm)
+    if cached:
+        log.info("[CACHE HIT] Serving /api/generate/tdr from in-memory cache")
+        return cached
+
     try:
         parsed = parse_tpf_entry(req.raw_text, req.entry_name, req.segment)
         llm_mode = "static"
@@ -504,13 +499,15 @@ def gen_tdr(req: TPFEntryRequest):
         if not output:
             output = generate_tdr_file(parsed)
 
-        return GenerateResponse(
+        resp = GenerateResponse(
             output=output,
             file_type="TDR",
             entry_name=parsed.name,
             llm_mode=llm_mode,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
+        GLOBAL_CACHE.set(req.raw_text, "tdr", req.mode, req.use_llm, resp)
+        return resp
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -518,23 +515,37 @@ def gen_tdr(req: TPFEntryRequest):
 @app.post("/api/generate/rexx", response_model=GenerateResponse)
 def gen_rexx(req: TPFEntryRequest):
     """Generate IBM z/TPF REXX (RAVEN) exec — Qwen2.5-Coder only."""
+    cached = GLOBAL_CACHE.get(req.raw_text, "rexx", req.mode, req.use_llm)
+    if cached:
+        log.info("[CACHE HIT] Serving /api/generate/rexx from in-memory cache")
+        return cached
+
     try:
         parsed = parse_tpf_entry(req.raw_text, req.entry_name, req.segment)
 
-        if not is_ollama_available():
-            raise HTTPException(
-                status_code=503,
-                detail="Ollama not available. Start Ollama and pull qwen2.5-coder to use REXX generation."
-            )
+        summary = _parsed_to_summary(parsed)
+        llm_mode = "static"
+        output = ""
 
-        output = generate_rexx_llm(_parsed_to_summary(parsed))
-        return GenerateResponse(
+        if req.use_llm and is_ollama_available():
+            try:
+                output = generate_rexx_llm(summary)
+                llm_mode = "qwen2.5-coder"
+            except Exception as e:
+                log.warning(f"LLM REXX failed: {e}")
+
+        if not output:
+            output = generate_rexx_static(summary)
+
+        resp = GenerateResponse(
             output=output,
             file_type="REXX",
             entry_name=parsed.name,
-            llm_mode=f"qwen2.5-coder",
+            llm_mode=llm_mode,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
+        GLOBAL_CACHE.set(req.raw_text, "rexx", req.mode, req.use_llm, resp)
+        return resp
     except HTTPException:
         raise
     except Exception as e:
@@ -543,40 +554,26 @@ def gen_rexx(req: TPFEntryRequest):
 
 @app.post("/api/explain", response_model=GenerateResponse)
 def explain_zcmd(req: TPFEntryRequest):
-    """Explain a single ZTPF Z Command — Knowledge Base first, then LLM."""
+    """Explain a single ZTPF Z Command — rich knowledge base first, LLM for unknowns."""
     try:
-        from llm.tpf_knowledge import KNOWLEDGE
+        from llm.tpf_knowledge import ZCMD_RESPONSES, parse_zcmd_verb
         cmd_text = req.raw_text.strip()
-        base_cmd = cmd_text.split()[0].upper() if cmd_text else ""
-
-        # Try knowledge base first (instant, no LLM needed)
-        kb_entry = KNOWLEDGE.get("z_commands", {}).get(base_cmd)
-        
-        if kb_entry and not is_ollama_available():
-            # Pure KB fallback — format nicely
-            output = f"**Command:** {base_cmd}\n**Purpose:** {kb_entry}\n\n[Response from local knowledge base — Ollama offline]"
-            return GenerateResponse(
-                output=output,
-                file_type="ZCMD",
-                entry_name="Z_CMD",
-                llm_mode="knowledge_base",
-                chat_response=f"Here is what I know about **{base_cmd}**: {kb_entry}",
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-
-        if not is_ollama_available():
-            raise HTTPException(
-                status_code=503,
-                detail="Ollama not available. Start Ollama or enter a known Z Command for a knowledge-base response."
-            )
-
+        base_cmd = parse_zcmd_verb(cmd_text)
         output = explain_z_command_llm(cmd_text)
+        llm_mode = "knowledge_base" if ZCMD_RESPONSES.get(base_cmd) else (
+            "qwen2.5-coder" if is_ollama_available() else "knowledge_base"
+        )
+        if not output:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown Z-Command '{base_cmd}'. Try ZDSYS, ZDECB, ZOSRV, or browse the Z-CMD panel.",
+            )
         return GenerateResponse(
             output=output,
             file_type="ZCMD",
             entry_name="Z_CMD",
-            llm_mode="qwen2.5-coder",
-            chat_response=f"Here is the explanation for **{base_cmd}**: {output[:300]}...",
+            llm_mode=llm_mode,
+            chat_response=output,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
     except HTTPException:
@@ -597,16 +594,14 @@ def chat_only(req: TPFEntryRequest):
         kb_entry = KNOWLEDGE.get("z_commands", {}).get(first_word)
         
         if kb_entry:
-            # Direct Z-command hit in knowledge base
-            output = f"**Command:** {first_word}\n**Purpose:** {kb_entry}\n"
-            if is_ollama_available():
-                # Enrich with LLM
-                output = explain_z_command_llm(query)
+            output = explain_z_command_llm(query)
+            from llm.tpf_knowledge import ZCMD_RESPONSES
+            llm_mode = "knowledge_base" if ZCMD_RESPONSES.get(first_word) else "qwen2.5-coder"
             return GenerateResponse(
                 output=output,
                 file_type="CHAT",
                 entry_name="CHAT",
-                llm_mode="knowledge_base+llm" if is_ollama_available() else "knowledge_base",
+                llm_mode=llm_mode,
                 chat_response=output,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
@@ -629,13 +624,13 @@ def chat_only(req: TPFEntryRequest):
             )
 
         # General conversational question — use Advisor (Llama) for best results
-        from llm.ollama_client import ADVISOR_MODEL, ADVISOR_SYSTEM, _call_ollama
+        from llm.ollama_client import ADVISOR_MODEL, CHAT_SYSTEM, _call_ollama
         prompt = f"""You are the STS Coder IBM z/TPF Engineering Copilot. Answer this question clearly and concisely:
 
 {query}
 
 Use your knowledge of IBM z/TPF, Z-Commands, REXX, VAR, TDRV, TDR and TPF assembler."""
-        output = _call_ollama(ADVISOR_MODEL, ADVISOR_SYSTEM, prompt, temperature=0.4)
+        output = _call_ollama(ADVISOR_MODEL, CHAT_SYSTEM, prompt, temperature=0.4)
         
         return GenerateResponse(
             output=output,
@@ -655,9 +650,14 @@ Use your knowledge of IBM z/TPF, Z-Commands, REXX, VAR, TDRV, TDR and TPF assemb
 def gen_full(req: TPFEntryRequest):
     """
     Full Engineering Pack — dual-model reinforcement pipeline.
-    Phase 1 (Qwen2.5-Coder): Analyze → VAR → TDRV → TDR → REXX
+    Phase 1 (Qwen2.5-Coder): Analyze → VAR → TDR → REXX
     Phase 2 (Llama 3.3):     Recommendations using ALL Phase 1 outputs
     """
+    cached = GLOBAL_CACHE.get(req.raw_text, "full", req.mode, req.use_llm)
+    if cached:
+        log.info("[CACHE HIT] Serving /api/generate/full from in-memory cache")
+        return cached
+
     try:
         parsed = parse_tpf_entry(req.raw_text, req.entry_name, req.segment)
         static_analysis = generate_analysis(parsed)
@@ -680,11 +680,11 @@ def gen_full(req: TPFEntryRequest):
             else:
                 chat_reply += "No major risks were found by the Advisor. Please review the output tabs."
 
-            return FullPackResponse(
+            resp = FullPackResponse(
                 analysis=merged_analysis,
                 recommendations=llm_result["recommendations"] or static_recs,
                 var_file=llm_result["var_file"] or generate_var_file(parsed),
-                tdrv_file=llm_result["tdrv_file"] or generate_tdrv_file(parsed),
+
                 tdr_file=llm_result["tdr_file"] or generate_tdr_file(parsed),
                 rexx_exec=llm_result.get("rexx_exec"),
                 ml_prediction=ml,
@@ -696,13 +696,15 @@ def gen_full(req: TPFEntryRequest):
                 chat_response=chat_reply,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
+            GLOBAL_CACHE.set(req.raw_text, "full", req.mode, req.use_llm, resp)
+            return resp
         else:
             # Pure static fallback
-            return FullPackResponse(
+            resp = FullPackResponse(
                 analysis=static_analysis,
                 recommendations=static_recs,
                 var_file=generate_var_file(parsed),
-                tdrv_file=generate_tdrv_file(parsed),
+
                 tdr_file=generate_tdr_file(parsed),
                 rexx_exec=None,
                 ml_prediction=ml,
@@ -713,6 +715,8 @@ def gen_full(req: TPFEntryRequest):
                 llm_errors=["Ollama not available — using static generation."],
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
+            GLOBAL_CACHE.set(req.raw_text, "full", req.mode, req.use_llm, resp)
+            return resp
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -754,16 +758,27 @@ async def startup():
     print("  STS Coder API v2.0 — Dual-Model LLM Edition")
     print("  Travelport Smart TPF System Coder")
     print("=" * 60)
+    from llm.tpf_knowledge import ZCMD_RESPONSES
+    print(f"  Z-Commands in knowledge base: {len(ZCMD_RESPONSES)}")
     ollama_ok = is_ollama_available()
     print(f"  Ollama available: {ollama_ok}")
     if ollama_ok:
         models = list_available_models()
         print(f"  Available models: {models}")
-        print(f"  Coder model  ({CODER_MODEL}): {'✓' if any(CODER_MODEL in m for m in models) else '✗ not pulled'}")
-        print(f"  Advisor model ({ADVISOR_MODEL}): {'✓' if any(ADVISOR_MODEL in m for m in models) else '✗ not pulled'}")
+        print(f"  Coder model  ({CODER_MODEL}): {'[OK]' if any(CODER_MODEL in m for m in models) else '[NOT PULLED]'}")
+        print(f"  Advisor model ({ADVISOR_MODEL}): {'[OK]' if any(ADVISOR_MODEL in m for m in models) else '[NOT PULLED]'}")
     else:
-        print("  ⚠ Ollama not running — static fallback mode active")
-        print("    To enable LLM: ollama serve && ollama pull qwen2.5-coder && ollama pull llama3.3")
+        print("  [WARN] Ollama not running -- KB + static fallback mode active")
+        print("    To enable LLM: ollama serve && ollama pull qwen2.5-coder && ollama pull llama3.2")
+    type_model = os.path.join(os.path.dirname(__file__), "training", "data", "entry_type_model.joblib")
+    if not os.path.exists(type_model):
+        try:
+            from training.train_model import train
+            print("  ML models not found — training classifiers...")
+            train()
+            print("  ML models trained successfully.")
+        except Exception as e:
+            print(f"  [WARN] ML auto-train skipped: {e}")
     print("=" * 60)
 
 

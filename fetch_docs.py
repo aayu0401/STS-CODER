@@ -1,3 +1,4 @@
+import sys
 import requests
 from bs4 import BeautifulSoup
 import concurrent.futures
@@ -81,53 +82,12 @@ with open("backend/training/data/docs_raw.txt", "w", encoding="utf-8") as f:
 
 print(f"Saved {len(all_text)} chars of raw documentation.")
 
-# Generate summary using Ollama Llama 3.3 or Qwen to extract key principles
-print("Generating compressed knowledge base using Ollama...")
-PROMPT = """You are an expert IBM z/TPF and REXX engineer.
-Read the following raw documentation extracts and produce a comprehensive, structured knowledge base.
-Focus on:
-1. z/TPF programming conventions and best practices.
-2. Important z/TPF Macros (e.g. ENTER, EXITC, FILEC, FINDA, GETCC, RELCC) and their rules.
-3. REXX APIs and RAVEN automation rules.
-4. Z commands and TPFDF concepts.
-5. Entry Control Block (ECB) processing.
-
-Output format: Return ONLY a valid Python dictionary structure like this (do not use markdown formatting, just the python code):
-KNOWLEDGE = {
-    "conventions": ["rule 1", "rule 2"],
-    "macros": {"MACRO_NAME": "description and usage"},
-    "rexx_raven": ["rule 1", "rule 2"],
-    "z_commands": ["cmd1", "cmd2"],
-    "ecb_processing": ["concept 1", "concept 2"]
-}
-"""
-
-# We will chunk the text to fit into context window
-# Since the text might be huge, we just take the first 60000 chars as a sample for the LLM
-chunk = all_text[:80000]
-
+# Merge any Z-commands found in docs into tpf_knowledge.py (safe merge — never overwrites full file)
+print("Merging Z-commands from docs into knowledge base...")
 try:
-    resp = requests.post("http://localhost:11434/api/generate", json={
-        "model": "qwen2.5-coder",
-        "prompt": PROMPT + "\n\nDOCUMENTATION:\n" + chunk,
-        "stream": False,
-        "options": {"temperature": 0.1, "num_ctx": 32000}
-    }, timeout=180)
-    
-    if resp.status_code == 200:
-        result_text = resp.json().get('response', '')
-        # extract dictionary
-        match = re.search(r'KNOWLEDGE\s*=\s*\{.*\}', result_text, re.DOTALL)
-        if match:
-            kb_str = match.group(0)
-            with open("backend/llm/tpf_knowledge.py", "w", encoding="utf-8") as f:
-                f.write(kb_str)
-            print("Successfully extracted and saved tpf_knowledge.py")
-        else:
-            print("Could not parse KNOWLEDGE dict from LLM response. Saving raw response.")
-            with open("backend/llm/tpf_knowledge.py", "w", encoding="utf-8") as f:
-                f.write('KNOWLEDGE = {"raw": """' + result_text.replace('"', '\\"') + '"""}')
-    else:
-        print(f"Ollama error: {resp.text}")
+    import subprocess
+    subprocess.run([sys.executable, str(__import__("pathlib").Path(__file__).parent / "scripts" / "fetch_zcommands.py")], check=False)
 except Exception as e:
-    print(f"Error calling Ollama: {e}")
+    print(f"Z-command merge skipped: {e}")
+
+# Ollama overwrite of tpf_knowledge.py is disabled — use scripts/fetch_zcommands.py for safe merges.

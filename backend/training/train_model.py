@@ -14,9 +14,15 @@ Usage:
 
 import re
 import os
+import sys
 import json
 import numpy as np
 from datetime import datetime, timezone
+
+# Ensure backend root is on path for easy importing
+backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
 
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.model_selection import cross_val_score, StratifiedKFold
@@ -127,6 +133,142 @@ def augment_samples(samples: list[dict], factor: int = 5) -> list[dict]:
     return augmented
 
 
+def get_dynamic_samples() -> list[dict]:
+    """Dynamically generate training samples for all Z-commands in the knowledge base."""
+    dynamic_samples = []
+    try:
+        from llm.tpf_knowledge import ZCMD_RESPONSES
+        print(f"  [KB DATA] Found {len(ZCMD_RESPONSES)} Z-commands in knowledge base.")
+        
+        for cmd, detail in ZCMD_RESPONSES.items():
+            purpose = detail.get("purpose", "")
+            description = detail.get("description", "")
+            category = detail.get("category", "General")
+            syntax = detail.get("syntax", cmd)
+            
+            # Map Entry Type
+            if cmd == "ZTPFDF":
+                entry_type = "Z_TPFDF_COMMAND"
+            elif cmd == "ZSTAT":
+                entry_type = "Z_STAT_COMMAND"
+            elif cmd == "ZDUMP":
+                entry_type = "Z_DUMP_COMMAND"
+            elif cmd == "ZPAGE":
+                entry_type = "Z_PAGE_COMMAND"
+            elif cmd == "ZD0DB":
+                entry_type = "Z_D0DB_COMMAND"
+            elif cmd == "ZFILE":
+                entry_type = "Z_FILE_COMMAND"
+            elif cmd in ("ZINET", "ZDTCP"):
+                entry_type = "Z_INET_COMMAND"
+            else:
+                entry_type = "Z_COMMAND_HANDLER"
+                
+            # Map Risk Level
+            if category in ("Diagnostic", "Performance", "General"):
+                risk_level = "LOW"
+            elif category in ("System Status", "Network", "Operations", "Logging"):
+                risk_level = "MODERATE"
+            else: # Storage, Database, Security, Messaging
+                risk_level = "HIGH"
+                
+            if cmd in ("ZSTOP", "ZSHUT", "ZFCRZ"): # critical commands
+                risk_level = "HIGH"
+                
+            # 1. Generate Assembly Handler Sample
+            asm_snippet = f"""{cmd}PROC CSECT
+* Z-Command Handler for {cmd} - {purpose}
+         USING *,R12
+         ENTER TRDR
+         L     R3,CE1CR0
+         CLC   0({len(cmd)},R3),=C'{cmd}'
+         BNE   ERR_{cmd}
+         MVC   Z_RESP(40),=CL40'{purpose[:39]}'
+         SENDC TYPE=RESP,DATA=Z_RESP
+         EXITC TRDR
+ERR_{cmd} DS    0H
+         MVI   ERR_CODE,C'E'
+         BACKC TRDR
+Z_RESP   DS    CL40
+ERR_CODE DS    CL4"""
+
+            dynamic_samples.append({
+                "entry_text": asm_snippet,
+                "entry_type": entry_type,
+                "purpose": f"Assembly command handler for {cmd}",
+                "risk_level": risk_level,
+            })
+            
+            # 2. Generate REXX Automation Sample
+            rexx_snippet = f"""/* REXX — IBM z/TPF RAVEN Automation for {cmd} */
+/* Purpose: {purpose} */
+ADDRESS RAVEN
+
+PARSE ARG input_parms
+
+SAY 'Executing {cmd} command...'
+'{syntax}'
+IF RC \\= 0 THEN DO
+  SAY 'ERROR: {cmd} failed RC='RC
+  CALL log_event 'ERROR', '{cmd} execution failed'
+  EXIT 8
+END
+
+CALL log_event 'INFO', '{cmd} completed successfully'
+EXIT 0
+
+log_event: PROCEDURE
+  PARSE ARG level, message
+  SAY DATE('S') TIME() level ':' message
+RETURN"""
+
+            dynamic_samples.append({
+                "entry_text": rexx_snippet,
+                "entry_type": "REXX_RAVEN_EXEC",
+                "purpose": f"REXX automation for {cmd}",
+                "risk_level": "LOW" if risk_level != "HIGH" else "MODERATE",
+            })
+            
+            # 3. Generate Recovery Automation Sample (for higher risk commands)
+            if risk_level in ("MODERATE", "HIGH"):
+                recovery_snippet = f"""/* REXX — RAVEN Recovery Automation for {cmd} failure */
+ADDRESS RAVEN
+PARSE ARG target_entry
+
+max_retries = 3
+delay_seconds = 5
+recovery_ok = 0
+
+DO retry_count = 1 TO max_retries
+  SAY 'RECOVERY: Attempt' retry_count 'to restart' target_entry 'via {cmd}'
+  '{syntax}'
+  IF RC = 0 THEN DO
+    SAY 'RECOVERY: Succeeded'
+    recovery_ok = 1
+    LEAVE
+  END
+  SAY 'RECOVERY: Failed RC='RC', sleeping' delay_seconds 'seconds'
+  CALL SysSleep delay_seconds
+END
+
+IF recovery_ok = 0 THEN DO
+  SAY 'ERR: All recovery attempts failed for {cmd}'
+  EXIT 12
+END
+EXIT 0"""
+
+                dynamic_samples.append({
+                    "entry_text": recovery_snippet,
+                    "entry_type": "RECOVERY_AUTOMATION",
+                    "purpose": f"Recovery automation using {cmd}",
+                    "risk_level": "HIGH",
+                })
+    except Exception as e:
+        print(f"Failed to generate dynamic samples: {e}")
+        
+    return dynamic_samples
+
+
 # ═══════════════════════════════════════════
 # TRAINING
 # ═══════════════════════════════════════════
@@ -142,10 +284,16 @@ def train():
     print("  STS Coder — Model Training Pipeline")
     print("=" * 60)
 
+    # Load dynamic samples from knowledge base
+    dynamic_samples = get_dynamic_samples()
+    full_samples = TRAINING_SAMPLES + dynamic_samples
+
     # Augment data
     print(f"\n[1/5] Augmenting training data...")
-    augmented = augment_samples(TRAINING_SAMPLES, factor=8)
+    augmented = augment_samples(full_samples, factor=8)
     print(f"  Original samples: {len(TRAINING_SAMPLES)}")
+    print(f"  Dynamic Z-command samples: {len(dynamic_samples)}")
+    print(f"  Full base samples: {len(full_samples)}")
     print(f"  Augmented samples: {len(augmented)}")
 
     # Extract features

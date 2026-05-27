@@ -33,7 +33,7 @@ ANALYSIS_TOKENS = 256 # JSON analysis
 # ─────────────────────────────────────────────
 
 CODER_SYSTEM = """\
-You are STS Coder, an expert IBM z/TPF system programmer and REXX/RAVEN specialist.
+You are STS Coder, an expert IBM z/TPF RAVEN Automation Engineer, TPF Operations Server Specialist, and REXX developer.
 
 ## IBM z/TPF Domain Rules
 - Programs are System/390 BAL (Basic Assembler Language) with IBM z/TPF macros.
@@ -44,65 +44,125 @@ You are STS Coder, an expert IBM z/TPF system programmer and REXX/RAVEN speciali
 - Programs MUST be strictly reentrant. No self-modifying code.
 - REXX in z/TPF runs in RAVEN environment. First line: /* REXX */. Use ADDRESS RAVEN.
 
-## VAR File — Fixed-width columns
+## TDRV File Format (RAVEN Standard)
+* TDRV: <name>
+* PURPOSE: <description>
+* DATE: YYYY-MM-DD | AUTHOR: STS Coder AI
+*--------------------------------------------------------------
+* STEP 001: <description>
+SEND "<z-command>"
+WAIT 30
+EXPECT "*COMMAND COMPLETE*" PASS
+EXPECT "*ERROR*" FAIL
+*--------------------------------------------------------------
+* STEP 002: <description>
+SEND "<next-command>"
+WAIT 60
+EXPECT "*SUCCESS*" PASS
+EXPECT "*FAILED*" FAIL
+RETRY 3
+DELAY 10
+*--------------------------------------------------------------
+* RECOVERY SECTION
+SEND "<recovery-command>"
+WAIT 30
+EXPECT "*RECOVERED*" PASS
+*--------------------------------------------------------------
+* END OF TDRV
+
+Rules: Sequential SEND, WAIT for timeout, EXPECT with wildcards for PASS/FAIL, RETRY with DELAY.
+
+## VAR File Format (Operations Server Standard)
+VARIATION_DESCRIPTION = "<description>"
+START_UP_TASKS:
+  CMD "<startup-command>"
+END
+VARIATION_CMD:
+  CMD "<monitoring-command>"
+END
+VARIATION:
+  TRAP MSG="<pattern>" ACTION="<rexx-script-or-command>"
+  TRAP MSG="<error-pattern>" ACTION="RECOVERY"
+END
+SHUTDOWN_TASKS:
+  CMD "<cleanup-command>"
+END
+
+Also include fixed-width variable table:
 VAR NAME         TYPE    LEN  SOURCE       DEFAULT     VALIDATION    DESCRIPTION
-ERR_CODE         BIN     2    INTERNAL     X'0000'     0000-9999     Error return code
-INPUT_KEY        CHAR    8    CE1CR0+0     SPACES      NON-BLANK     Primary key input
-FILE_PTR         ADDR    4    FILE         N/A         NON-NULL      Record pointer
 
-Types: CHAR/BIN/PACK/HEX/ADDR/EQU
-Sources: INPUT/FILE/SYSTEM/INTERNAL/ECB/COMPUTED
-
-## TDRV File — Fixed-width columns
-STEP  ACTION                    ENTRY      CONDITION              NEXT
-001   RECEIVE REQUEST           TRXXX      ECB dispatched         002
-002   VALIDATE INPUT            TRXXX      CE1CR0 non-blank       003 / ERR-001
-003   ALLOCATE STORAGE          TRXXX      GETCC success          004 / ERR-002
-004   FILE ACCESS - READ        TRXXX      FINDA success          005 / ERR-003
-005   PROCESS DATA              TRXXX      Record valid           006
-006   FORMAT OUTPUT             TRXXX      Data formatted         007
-007   RETURN RESPONSE           TRXXX      RC=0                   EXIT
-ERR-001 ERROR HANDLING          TRXXX      Invalid input RC=16    EXIT-ERR
-EXIT    EXITC                   TRXXX      Normal end             -
-EXIT-ERR EXITN                  TRXXX      Error end              -
+## REXX/RAVEN Template
+/* REXX -- IBM z/TPF RAVEN Automation */
+/* Purpose: <purpose> */
+ADDRESS RAVEN
+PARSE ARG input_parms
+'<Z-command>'
+IF RC \= 0 THEN CALL error_handler RC
+PARSE VAR response field1 field2
+EXIT 0
+error_handler: PROCEDURE
+  PARSE ARG rc_code
+  SAY DATE('S') TIME() 'ERROR: RC='rc_code
+RETURN
 
 ## TDR Document Sections
 TDR NAME / ENTRY / SEGMENT / PURPOSE / INPUT FIELDS / OUTPUT FIELDS /
-DEPENDENCIES / EXCEPTIONS (with RC codes) / Z COMMANDS / REXX INTERFACE
-
-## REXX/RAVEN Template
-/* REXX */
-ADDRESS RAVEN
-PARSE ARG entry_name
-'ZSTAT ALL'
-IF RC \= 0 THEN SAY 'WARNING: ZSTAT RC='RC
-'ZPROG DISPLAY' entry_name
-IF RC = 0 THEN SAY entry_name 'is LOADED'
-EXIT 0
+DEPENDENCIES / EXCEPTIONS (with RC codes) / Z COMMANDS / REXX INTERFACE /
+RECOVERY FLOW / DEPLOYMENT INSTRUCTIONS / OPERATIONAL BEST PRACTICES
 
 ## Output Rules
 - Respond ONLY with the artifact (VAR/TDRV/TDR/REXX). No prose wrapper.
-- Use real IBM z/TPF macro names only.
-- Include all standard variables: ERR_CODE, RET_CODE, ECB_PTR.
-- Always include Z COMMANDS section in TDR.
+- Use real IBM z/TPF macro names and Z-Commands only.
+- Include standard variables: ERR_CODE, RET_CODE, ECB_PTR.
+- Always include Z COMMANDS and RECOVERY sections in TDR.
+- TDRV must use SEND/WAIT/EXPECT/RETRY/DELAY format.
+- VAR must use VARIATION_DESCRIPTION/VARIATION_CMD/VARIATION/TRAP format.
+- REXX must use ADDRESS RAVEN and proper RC checking.
 """
 
 ADVISOR_SYSTEM = """\
-You are STS Advisor, a senior IBM z/TPF engineering consultant.
+You are STS Advisor, a senior IBM z/TPF RAVEN engineering consultant and automation auditor.
 Produce a JSON array of engineering recommendations. Each item:
 {"severity": "ERROR"|"WARNING"|"INFO"|"OPTIMIZATION", "category": string, "text": string, "code_hint": string|null}
 
-Focus on:
-- FIWHC without UNFRC → ERROR
-- GETCC without RELCC → WARNING  
-- Missing error handling (no EXITN path) → WARNING
+## Automation Audit Rules
+- FIWHC without UNFRC -> ERROR (file lock leak, ECB deadlock risk)
+- GETCC without RELCC -> WARNING (storage leak, core block depletion)
+- Missing error handling (no EXITN path) -> WARNING
+- SEND without EXPECT -> WARNING (unvalidated command execution)
+- Missing RETRY on critical commands -> WARNING
+- No TIMEOUT/WAIT specified -> WARNING
+- Missing recovery section in TDRV -> WARNING
+- TRAP without error pattern -> INFO
+- No REXX RC checking -> WARNING
 - ECB safety and PNR access protection
-- REXX quality and RC checking
-- Z-Command monitoring coverage
+- Z-Command monitoring coverage gaps
 - Performance and storage efficiency
+- Message trap completeness
+- Recovery automation robustness
+- Operations Server integration quality
+- Self-healing capability gaps
+
+## Categories
+ERROR_HANDLING, EXIT_LOGIC, STORAGE, FILE_SAFETY, VALIDATION,
+AUTOMATION, RECOVERY, MONITORING, REXX_QUALITY, PERFORMANCE,
+SECURITY, OPERATIONS, DEPLOYMENT
 
 Respond ONLY with valid JSON array. No prose, no markdown fences.
 """
+
+CHAT_SYSTEM = """\
+You are the STS Coder IBM z/TPF Copilot, a senior IBM z/TPF RAVEN Automation Engineer and System Specialist.
+Your goal is to provide expert technical guidance on IBM z/TPF system architecture, RAVEN automation, REXX scripts, TDR documentation, VAR files, BAL assembler, and Z-Commands.
+
+## Guidance Rules:
+- Act as an elite z/TPF consultant. Be technically precise, helpful, and concise.
+- Output clean, professional markdown formatting.
+- Provide practical examples (REXX code blocks, Assembler snippets, or Z-Command examples) when relevant.
+- Do NOT output JSON recommendations. Always answer in conversational prose or clear bullet points.
+- If referencing a Z-Command, explain its syntax and function.
+"""
+
 
 
 # ─────────────────────────────────────────────
@@ -200,46 +260,57 @@ def stream_ollama(model: str, system: str, user_prompt: str, temperature: float 
                         continue
     except httpx.ConnectError:
         yield "[Error: Ollama not reachable]"
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            yield f"[Error: Model '{model}' not pulled. Run 'ollama pull {model}' in terminal to activate chat.]"
+        else:
+            yield f"[Error: Ollama HTTP {e.response.status_code}]"
+    except httpx.RequestError as e:
+        yield f"[Error: Ollama network request failed - {str(e)}]"
+    except Exception as e:
+        yield f"[Error: {str(e)}]"
+
+
+def _macros_from_summary(parsed_summary: dict) -> list:
+    """Macros list from parser summary (supports macros_called and macros keys)."""
+    return parsed_summary.get("macros_called") or parsed_summary.get("macros") or []
 
 
 def explain_z_command_stream(command: str):
-    """Stream a rich, detailed Z-Command explanation token by token."""
-    from .tpf_knowledge import KNOWLEDGE, ZCMD_RESPONSES
-    base_cmd = command.strip().split()[0].upper() if command.strip() else ""
-    detail    = ZCMD_RESPONSES.get(base_cmd)
-    kb_entry  = KNOWLEDGE.get("z_commands", {}).get(base_cmd, "")
+    """Stream Z-Command explanation — knowledge base first, LLM for unknown commands."""
+    from .tpf_knowledge import ZCMD_RESPONSES, format_zcmd_explanation, stream_text_chunks, parse_zcmd_verb
 
+    base_cmd = parse_zcmd_verb(command)
+    detail = ZCMD_RESPONSES.get(base_cmd)
     if detail:
-        prompt = (
-            f"Explain the IBM z/TPF '{base_cmd}' operator command in detail.\n\n"
-            f"Purpose: {detail['purpose']}\n"
-            f"Syntax: {detail['syntax']}\n"
-            f"Description: {detail['description']}\n"
-            f"Category: {detail['category']}\n\n"
-            f"Format your response as:\n"
-            f"**Command:** {base_cmd}\n"
-            f"**Purpose:** <1 sentence>\n"
-            f"**Syntax:** <syntax>\n"
-            f"**Description:** <2-3 sentences of detail>\n"
-            f"**Output Fields:** <key fields shown>\n"
-            f"**Example:** <example usage>\n"
-            f"**When to Use:** <operational guidance>"
-        )
-    else:
-        prompt = (
-            f"Explain the IBM z/TPF operator command: {command}\n"
-            f"Format: **Command:** <name>\n**Purpose:** <purpose>\n"
-            f"**Syntax:** <syntax>\n**Description:** <detail>\n**Example:** <usage>"
-        )
+        yield from stream_text_chunks(format_zcmd_explanation(command, detail))
+        return
+
+    prompt = (
+        f"Explain the IBM z/TPF operator command: {command}\n"
+        f"Format: **Command:** <name>\n**Purpose:** <purpose>\n"
+        f"**Syntax:** <syntax>\n**Description:** <detail>\n"
+        f"**Expected Response:** <typical console output>\n**Example:** <usage>"
+    )
     yield from stream_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1, num_predict=300)
 
 
 def chat_stream(query: str):
-    """Stream a rich z/TPF copilot chat response with KB-first routing."""
-    from .tpf_knowledge import KNOWLEDGE, ZTPF_SYSTEM_KNOWLEDGE, CHAT_TOPICS
+    """Stream z/TPF copilot chat — KB-first (Z-commands, topics), LLM when needed."""
+    from .tpf_knowledge import (
+        KNOWLEDGE, ZCMD_RESPONSES, ZTPF_SYSTEM_KNOWLEDGE, CHAT_TOPICS,
+        format_zcmd_explanation, stream_text_chunks, parse_zcmd_verb,
+    )
     q_lower = query.lower().strip()
 
-    # Try topic routing first — return instant KB answer
+    # Z-command at start of query — instant KB when available
+    first_word = parse_zcmd_verb(query)
+    zcmd_detail = ZCMD_RESPONSES.get(first_word)
+    if zcmd_detail:
+        yield from stream_text_chunks(format_zcmd_explanation(query, zcmd_detail))
+        return
+
+    # Topic routing — stream KB text directly when Ollama offline; enrich when online
     matched_topic = None
     for keyword, topic in CHAT_TOPICS.items():
         if keyword in q_lower:
@@ -248,28 +319,52 @@ def chat_stream(query: str):
 
     if matched_topic and matched_topic in ZTPF_SYSTEM_KNOWLEDGE:
         kb_text = ZTPF_SYSTEM_KNOWLEDGE[matched_topic].strip()
+        if not is_ollama_available():
+            yield from stream_text_chunks(kb_text[:3500])
+            return
         prompt = (
-            f"Using the following IBM z/TPF reference material, answer this question concisely and accurately:\n\n"
-            f"Question: {query}\n\n"
-            f"Reference Material:\n{kb_text}\n\n"
+            f"Using the following IBM z/TPF reference material, answer this question concisely:\n\n"
+            f"Question: {query}\n\nReference Material:\n{kb_text}\n\n"
             f"Provide a clear, structured answer with examples where relevant."
         )
-        yield from stream_ollama(ADVISOR_MODEL, ADVISOR_SYSTEM.replace('Produce a JSON array', 'Answer helpfully as a senior z/TPF expert. Do NOT produce JSON.'), prompt, temperature=0.3, num_predict=400)
+        yield from stream_ollama(
+            ADVISOR_MODEL,
+            CHAT_SYSTEM,
+            prompt, temperature=0.3, num_predict=400,
+        )
         return
 
-    # Check Z-command in query
-    first_word = query.strip().split()[0].upper()
     kb_entry = KNOWLEDGE.get("z_commands", {}).get(first_word, "")
-    if kb_entry:
+    if kb_entry and not zcmd_detail:
+        if not is_ollama_available():
+            yield from stream_text_chunks(
+                f"**Command:** {first_word}\n**Purpose:** {kb_entry}"
+            )
+            return
         prompt = (
             f"Explain the IBM z/TPF '{first_word}' operator command.\n"
-            f"Definition: {kb_entry}\n"
-            f"Give operational guidance and when to use it."
+            f"Definition: {kb_entry}\nGive operational guidance and when to use it."
         )
         yield from stream_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.2, num_predict=350)
         return
 
     # General z/TPF knowledge chat
+    if not is_ollama_available():
+        matches = []
+        for cmd, purpose in KNOWLEDGE.get("z_commands", {}).items():
+            if any(w in purpose.lower() for w in q_lower.split() if len(w) > 3):
+                matches.append(f"  • **{cmd}**: {purpose[:80]}")
+        if matches:
+            yield from stream_text_chunks(
+                "Relevant Z-Commands from knowledge base:\n\n" + "\n".join(matches[:6])
+            )
+        else:
+            yield from stream_text_chunks(
+                "Ollama is offline. Try a specific Z-Command (e.g. ZDSYS, ZDECB, ZOSRV) "
+                "or ask about VAR, TDR, TDRV, REXX, or TOS automation."
+            )
+        return
+
     system_ctx = "\n".join(KNOWLEDGE.get("conventions", [])[:3])
     prompt = (
         f"You are the STS Coder IBM z/TPF Copilot — a senior z/TPF expert.\n"
@@ -282,7 +377,7 @@ def chat_stream(query: str):
         f"- Best practices and common pitfalls\n"
         f"- Example code or command if applicable"
     )
-    yield from stream_ollama(ADVISOR_MODEL, ADVISOR_SYSTEM.replace('Produce a JSON array', 'Answer helpfully as a senior z/TPF expert. Do NOT produce JSON.'), prompt, temperature=0.35, num_predict=450)
+    yield from stream_ollama(ADVISOR_MODEL, CHAT_SYSTEM, prompt, temperature=0.35, num_predict=450)
 
 
 # ─────────────────────────────────────────────
@@ -293,7 +388,7 @@ def chat_stream(query: str):
 def generate_var_llm(parsed_summary: dict) -> str:
     """Generate a production IBM z/TPF VAR file with proper fixed-width format."""
     entry = parsed_summary.get('entry_name', 'TRXXX')
-    macros_found = parsed_summary.get('macros', [])
+    macros_found = _macros_from_summary(parsed_summary)
 
     # Pre-define strings that contain quotes (avoids backslash in f-string)
     x0000  = "X'0000'"
@@ -324,15 +419,35 @@ def generate_var_llm(parsed_summary: dict) -> str:
     static_var = "\n".join(var_lines)
 
     prompt = (
-        f"Generate a complete IBM z/TPF VAR (Variable Definition) file for entry {entry}.\n\n"
-        f"Already defined variables (add more based on this entry's logic):\n{static_var}\n\n"
+        f"Generate a complete IBM z/TPF Operations Server VAR file for entry {entry}.\n\n"
+        f"Already defined variables (include in variable table):\n{static_var}\n\n"
         f"Entry Analysis:\n{json.dumps(parsed_summary, indent=2)}\n\n"
+        f"Required RAVEN VAR format:\n"
+        f"VARIATION_DESCRIPTION = \"{entry} - Automation monitoring and recovery\"\n"
+        f"START_UP_TASKS:\n"
+        f"  CMD \"ZPROG DISPLAY {entry}\"\n"
+        f"  CMD \"ZSTAT ALL\"\n"
+        f"END\n"
+        f"VARIATION_CMD:\n"
+        f"  CMD \"ZSTAT ALL\"\n"
+        f"  CMD \"ZPROG DISPLAY {entry}\"\n"
+        f"END\n"
+        f"VARIATION:\n"
+        f"  TRAP MSG=\"*{entry}*COMPLETE*\" ACTION=\"LOG_SUCCESS\"\n"
+        f"  TRAP MSG=\"*ERROR*\" ACTION=\"RECOVERY\"\n"
+        f"  TRAP MSG=\"*ABEND*\" ACTION=\"ALERT\"\n"
+        f"END\n"
+        f"SHUTDOWN_TASKS:\n"
+        f"  CMD \"ZLOG CLOSE\"\n"
+        f"END\n\n"
+        f"Then include the variable definition table:\n"
+        f"{static_var}\n\n"
         f"Rules:\n"
-        f"- Use fixed-width column format exactly as shown above\n"
-        f"- Add entry-specific variables beyond the standards above\n"
+        f"- Include TRAP for success, error, and abend patterns\n"
+        f"- Add entry-specific TRAP patterns based on macros used\n"
+        f"- Include REXX script triggers where applicable\n"
         f"- Types: CHAR/BIN/PACK/HEX/ADDR/EQU\n"
         f"- Sources: INPUT/FILE/SYSTEM/INTERNAL/ECB/COMPUTED\n"
-        f"- Include ALL variables referenced by macros in the code\n"
         f"Output ONLY the VAR file content."
     )
     return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.05)
@@ -341,33 +456,47 @@ def generate_var_llm(parsed_summary: dict) -> str:
 def generate_tdrv_llm(parsed_summary: dict, var_output: Optional[str] = None) -> str:
     """Generate a full IBM z/TPF TDRV (Test Driver) file with fixed-width step format."""
     entry = parsed_summary.get('entry_name', 'TRXXX')
-    macros = parsed_summary.get('macros', [])
+    macros = _macros_from_summary(parsed_summary)
     has_file = any(m in macros for m in ['FINDA','FILEC','FIWHC'])
     has_storage = 'GETCC' in macros
 
-    prompt = f"""Generate a complete IBM z/TPF TDRV (Test Driver) file for entry {entry}.
+    prompt = f"""Generate a complete IBM z/TPF RAVEN TDRV (Test Driver) file for entry {entry}.
 
 Entry Analysis:
 {json.dumps(parsed_summary, indent=2)}
 
-Required TDRV fixed-width column format:
-STEP  ACTION                    ENTRY      CONDITION              NEXT
-001   RECEIVE REQUEST           {entry}    ECB dispatched         002
-002   VALIDATE INPUT            {entry}    CE1CR0 non-blank       003 / ERR-001
-{'003   ALLOCATE STORAGE          ' + entry + '    GETCC success          004 / ERR-002' if has_storage else ''}
-{'00X   FILE ACCESS - READ        ' + entry + '    FINDA success          00Y / ERR-003' if has_file else ''}
-XXX   PROCESS DATA              {entry}    Record valid           YYY
-YYY   FORMAT OUTPUT             {entry}    Data formatted         ZZZ
-ZZZ   RETURN RESPONSE           {entry}    RC=0                   EXIT
-ERR-001 ERROR HANDLING          {entry}    Invalid input RC=16    EXIT-ERR
-EXIT    EXITC                   {entry}    Normal end             -
-EXIT-ERR EXITN                  {entry}    Error end              -
+Required RAVEN TDRV format:
+* TDRV: {entry}
+* PURPOSE: Automation test driver for {entry}
+* DATE: 2026-05-20 | AUTHOR: STS Coder AI
+*--------------------------------------------------------------
+* STEP 001: Entry initialization and system check
+SEND "ZPROG DISPLAY {entry}"
+WAIT 30
+EXPECT "*LOADED*" PASS
+EXPECT "*NOT FOUND*" FAIL
+*--------------------------------------------------------------
+* STEP 002: Input validation
+SEND "ZSTAT ALL"
+WAIT 30
+EXPECT "*ACTIVE*" PASS
+EXPECT "*ERROR*" FAIL
+{'*--------------------------------------------------------------' + chr(10) + '* STEP 003: Storage verification' + chr(10) + 'SEND "ZPOOL DISPLAY"' + chr(10) + 'WAIT 30' + chr(10) + 'EXPECT "*AVAILABLE*" PASS' + chr(10) + 'EXPECT "*DEPLETED*" FAIL' + chr(10) + 'RETRY 3' + chr(10) + 'DELAY 5' if has_storage else ''}
+{'*--------------------------------------------------------------' + chr(10) + '* STEP: File system access' + chr(10) + 'SEND "ZFILE STATUS"' + chr(10) + 'WAIT 60' + chr(10) + 'EXPECT "*OPEN*" PASS' + chr(10) + 'EXPECT "*CLOSED*" FAIL' + chr(10) + 'EXPECT "*LOCKED*" FAIL' + chr(10) + 'RETRY 2' + chr(10) + 'DELAY 10' if has_file else ''}
+
+Add additional steps for:
+- Data processing and transformation
+- Output formatting and validation
+- Error handling with recovery commands
+- Final status check
 
 Rules:
-- Every macro call must have an error path (ERR-XXX steps)
-- Include FIWHC → UNFRC steps if file locking is detected
-- Steps must be sequential with proper NEXT references
-- Include ALL error conditions with specific RC codes
+- Use SEND/WAIT/EXPECT/RETRY/DELAY format
+- EXPECT patterns use wildcards (*) for matching
+- Every SEND must have EXPECT PASS and EXPECT FAIL
+- Include RETRY and DELAY for critical operations
+- Include RECOVERY section at end
+- Include * END OF TDRV marker
 Output ONLY the TDRV file."""
     return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.05)
 
@@ -376,7 +505,7 @@ def generate_tdr_llm(parsed_summary: dict, var_output: Optional[str] = None,
                      tdrv_output: Optional[str] = None) -> str:
     """Generate a full IBM z/TPF TDR (Transaction Design Record) document."""
     entry = parsed_summary.get('entry_name', 'TRXXX')
-    macros = parsed_summary.get('macros', [])
+    macros = _macros_from_summary(parsed_summary)
     z_cmds = []
     if any(m in macros for m in ['FINDA','FILEC','FIWHC']):
         z_cmds += ['ZTPFDF - Check database status', 'ZFILE  - Check file system status']
@@ -395,7 +524,7 @@ Required sections:
 1. TDR NAME: {entry}-TDR
 2. ENTRY NAME: {entry}
 3. SEGMENT: 00
-4. VERSION: 1.0 | DATE: 2026-05-13 | AUTHOR: STS Coder AI
+4. VERSION: 1.0 | DATE: 2026-05-20 | AUTHOR: STS Coder AI
 5. PURPOSE: Narrative description of what this entry does
 6. INPUT FIELDS: Table of CE1CR0 offsets with field names, types, lengths, descriptions
 7. OUTPUT FIELDS: Response fields with offsets, types, lengths
@@ -410,62 +539,166 @@ Required sections:
 11. Z COMMANDS FOR MONITORING AND DEBUGGING:
 {chr(10).join('    ' + c for c in z_cmds)}
 12. REXX/RAVEN INTERFACE: Sample RAVEN exec to monitor this entry
+13. RECOVERY FLOW:
+    - Step-by-step recovery procedure for each failure mode
+    - Recovery commands and expected results
+    - Escalation path when recovery fails
+14. DEPLOYMENT INSTRUCTIONS:
+    - Pre-deployment checks
+    - Deployment steps
+    - Post-deployment validation
+    - Rollback procedure
+15. OPERATIONAL BEST PRACTICES:
+    - Monitoring frequency recommendations
+    - Alert thresholds
+    - Log retention policy
+    - Self-healing automation triggers
 
 Output ONLY the TDR document."""
     return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1)
 
 
 def generate_rexx_llm(parsed_summary: dict) -> str:
-    """Use Qwen2.5-Coder to generate IBM z/TPF REXX (RAVEN) exec."""
-    prompt = f"""Generate an IBM z/TPF REXX exec (RAVEN environment) for this entry.
+    """Use Qwen2.5-Coder to generate IBM z/TPF REXX (RAVEN) automation exec."""
+    entry = parsed_summary.get('entry_name', 'TRXXX')
+    macros = _macros_from_summary(parsed_summary)
+    purpose = parsed_summary.get('purpose', 'TPF automation')
+
+    prompt = f"""Generate a production-ready IBM z/TPF REXX exec (RAVEN environment) for entry {entry}.
 
 Entry Summary:
 {json.dumps(parsed_summary, indent=2)}
 
-The REXX exec should:
-- Use proper RAVEN ADDRESS environment
-- Handle ECB context
-- Implement the entry's core logic in REXX
-- Include Z Command integration where applicable
-- Include error handling with REXX signal/procedure
+Required REXX structure:
+/* REXX -- IBM z/TPF RAVEN Automation: {entry} */
+/* Purpose: {purpose} */
+/* Generated by STS Coder AI */
+ADDRESS RAVEN
 
-Produce ONLY the REXX source code with inline comments.
+PARSE ARG input_parms
+max_retries = 3
+delay_seconds = 5
+
+/* Step 1: System verification */
+'ZPROG DISPLAY {entry}'
+IF RC \= 0 THEN DO
+  CALL log_event 'ERROR', '{entry} not loaded RC='RC
+  CALL error_handler RC
+END
+
+/* Step 2: Status check */
+'ZSTAT ALL'
+IF RC \= 0 THEN CALL log_event 'WARNING', 'ZSTAT RC='RC
+
+/* Step 3: Command execution with retry */
+DO retry_count = 1 TO max_retries
+  '<primary-command>'
+  IF RC = 0 THEN LEAVE
+  CALL log_event 'WARNING', 'Retry' retry_count 'of' max_retries
+  CALL SysSleep delay_seconds
+END
+IF RC \= 0 THEN DO
+  CALL log_event 'ERROR', 'All retries exhausted'
+  CALL error_handler RC
+END
+
+/* Response parsing */
+PARSE VAR response status_field data_field
+
+CALL log_event 'INFO', '{entry} automation completed successfully'
+EXIT 0
+
+log_event: PROCEDURE
+  PARSE ARG level, message
+  SAY DATE('S') TIME() level ':' message
+RETURN
+
+error_handler: PROCEDURE
+  PARSE ARG rc_code
+  SAY DATE('S') TIME() 'ALERT: Critical error RC='rc_code
+  /* Recovery: attempt system reset */
+  'ZSTAT ALL'
+  EXIT rc_code
+RETURN
+
+The REXX must include:
+- ADDRESS RAVEN environment
+- PARSE ARG for input parameters
+- Command execution with RC checking
+- Retry logic with configurable count/delay
+- Response parsing with PARSE VAR
+- Structured logging via log_event subroutine
+- Error handler with recovery attempt
+- Proper EXIT codes
+- Inline comments for each section
+- Macros used in this entry: {', '.join(macros) if macros else 'NONE'}
+
+Output ONLY the REXX source code.
 """
-    return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.2)
+    return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.15)
 
 
 def explain_z_command_llm(command: str) -> str:
-    """Use Qwen2.5-Coder to explain a single ZTPF Z Command using the Knowledge Base."""
-    # Extract base command verb (e.g. ZPAGE from ZPAGE F)
-    base_cmd = command.strip().split()[0].upper()
-    
-    exact_purpose = KNOWLEDGE["z_commands"].get(base_cmd)
-    
-    if exact_purpose:
-        prompt = f"""Explain the IBM z/TPF '{base_cmd}' command.
+    """Explain a ZTPF Z Command — rich KB first, LLM only for unknown commands."""
+    from .tpf_knowledge import ZCMD_RESPONSES, format_zcmd_explanation, parse_zcmd_verb
 
-Here is the exact authoritative definition and purpose from the training data:
-{exact_purpose}
+    base_cmd = parse_zcmd_verb(command)
+    detail = ZCMD_RESPONSES.get(base_cmd)
+    if detail:
+        return format_zcmd_explanation(command, detail)
 
-Task:
-Produce a precise response for the user containing the command and its purpose, expanding slightly on its use case based on the provided definition. 
-Keep it clear and precise. Do not invent details outside of this definition.
-Format it as:
-**Command:** {base_cmd}
-**Purpose:** <extracted purpose>
-**Details:** <short expansion>
-"""
-    else:
-        prompt = f"""Explain this IBM z/TPF Z Command.
+    prompt = f"""Explain this IBM z/TPF Z Command.
 Command: {command}
 
-Provide a clear, precise explanation of what this command does, its purpose, and any important parameters.
-Format it as:
-**Command:** <Command Name>
-**Purpose:** <Purpose>
-**Details:** <short explanation>
+Provide purpose, syntax, expected console response, return codes, and example usage.
+Format:
+**Command:** <name>
+**Purpose:** <purpose>
+**Syntax:** <syntax>
+**Expected Response:** <typical output>
+**Details:** <explanation>
 """
     return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1, num_predict=FAST_TOKENS)
+
+
+def generate_rexx_static(parsed_summary: dict) -> str:
+    """Static REXX/RAVEN template when Ollama is unavailable."""
+    entry = parsed_summary.get("entry_name", "TRXXX")
+    macros = ", ".join(_macros_from_summary(parsed_summary)) or "NONE"
+    purpose = parsed_summary.get("purpose", "TPF transaction monitoring")
+    return f"""/* REXX — IBM z/TPF RAVEN Exec: {entry} */
+/* Purpose: {purpose} */
+/* Macros in entry: {macros} */
+
+ADDRESS RAVEN
+
+PARSE ARG entry_input
+
+IF entry_input = '' THEN DO
+  SAY 'ERR: No input provided'
+  EXIT 8
+END
+
+/* TOS automation: verify Operations Server connectivity */
+'ZOSRV DISPLAY'
+IF RC \\= 0 THEN DO
+  SAY 'WARNING: ZOSRV RC='RC
+END
+
+'ZPROG DISPLAY {entry}'
+IF RC = 0 THEN
+  SAY '{entry} is LOADED'
+ELSE DO
+  SAY 'ALERT: {entry} NOT LOADED — RC='RC
+  EXIT 4
+END
+
+'ZSTAT ALL'
+IF RC \\= 0 THEN SAY 'WARNING: ZSTAT RC='RC
+
+SAY 'OK: {entry} monitoring complete'
+EXIT 0
+"""
 
 
 def analyze_entry_llm(raw_text: str, parsed_summary: dict) -> dict:
@@ -582,11 +815,11 @@ def _fallback_recommendations(parsed_summary: dict) -> list[dict]:
 def run_full_pipeline_llm(raw_text: str, parsed_summary: dict) -> dict:
     """
     Reinforcement pipeline:
-    Phase 1 (Qwen2.5-Coder): Analyze → VAR → TDRV → TDR → REXX
+    Phase 1 (Qwen2.5-Coder): Analyze -> VAR -> TDR -> REXX
     Phase 2 (Llama 3.3):     Recommendations using ALL Phase 1 outputs
     Phase 3 (Feedback):      Return combined result with cross-model context
 
-    Returns dict with: analysis, var_file, tdrv_file, tdr_file, rexx_exec, recommendations
+    Returns dict with: analysis, var_file, tdr_file, rexx_exec, recommendations
     """
     result = {
         "llm_mode": "dual_model_reinforcement",
@@ -594,7 +827,6 @@ def run_full_pipeline_llm(raw_text: str, parsed_summary: dict) -> dict:
         "advisor_model": ADVISOR_MODEL,
         "analysis": {},
         "var_file": "",
-        "tdrv_file": "",
         "tdr_file": "",
         "rexx_exec": "",
         "recommendations": [],
@@ -610,10 +842,9 @@ def run_full_pipeline_llm(raw_text: str, parsed_summary: dict) -> dict:
         except Exception as e:
             return e
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         f_analysis = executor.submit(safe_run, analyze_entry_llm, raw_text, parsed_summary)
         f_var      = executor.submit(safe_run, generate_var_llm, parsed_summary)
-        f_tdrv     = executor.submit(safe_run, generate_tdrv_llm, parsed_summary, None)
         f_tdr      = executor.submit(safe_run, generate_tdr_llm, parsed_summary, None, None)
         f_rexx     = executor.submit(safe_run, generate_rexx_llm, parsed_summary)
         
@@ -629,12 +860,6 @@ def run_full_pipeline_llm(raw_text: str, parsed_summary: dict) -> dict:
         else:
             result["var_file"] = res_var
             
-        res_tdrv = f_tdrv.result()
-        if isinstance(res_tdrv, Exception):
-            result["errors"].append(f"TDRV generation: {res_tdrv}")
-        else:
-            result["tdrv_file"] = res_tdrv
-            
         res_tdr = f_tdr.result()
         if isinstance(res_tdr, Exception):
             result["errors"].append(f"TDR generation: {res_tdr}")
@@ -649,11 +874,11 @@ def run_full_pipeline_llm(raw_text: str, parsed_summary: dict) -> dict:
 
     # Phase 2: Llama 3.3 — recommendations with full Phase 1 context
     try:
-        log.info(f"[LLM] Phase 2: {ADVISOR_MODEL} — recommendations")
+        log.info(f"[LLM] Phase 2: {ADVISOR_MODEL} -- recommendations")
         result["recommendations"] = generate_recommendations_llm(
             parsed_summary,
             var_output=result["var_file"] or None,
-            tdrv_output=result["tdrv_file"] or None,
+            tdrv_output=None,
             TDR_output=result["tdr_file"] or None,
             coder_analysis=result["analysis"] or None,
         )
