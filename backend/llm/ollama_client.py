@@ -1,7 +1,7 @@
 """
 STS Coder — Ollama Dual-Model LLM Client
 ==========================================
-Qwen2.5-Coder  → IBM REXX / Raven coding, VAR / TDRV / TDR generation
+Qwen2.5-Coder  → IBM REXX / Raven coding, VAR / TDR generation
 Llama 3.3      → Engineering recommendations & risk narrative
 Reinforcement  → Models share context / feedback for collaborative refinement
 
@@ -19,12 +19,12 @@ from .tpf_knowledge import KNOWLEDGE
 log = logging.getLogger("sts.llm")
 
 OLLAMA_BASE   = "http://localhost:11434"
-CODER_MODEL   = "qwen2.5-coder:1.5b"   # IBM REXX / VAR / TDRV / TDR
+CODER_MODEL   = "qwen2.5-coder:1.5b"   # IBM REXX / VAR / TDR
 ADVISOR_MODEL = "llama3.2"              # Recommendations / risk narrative
 
 TIMEOUT       = 150   # seconds per request
 FAST_TOKENS   = 256   # Z-CMD / Chat  — short, precise
-FULL_TOKENS   = 768   # VAR / TDRV / TDR / REXX — structured docs
+FULL_TOKENS   = 768   # VAR / TDR / REXX — structured docs
 ANALYSIS_TOKENS = 256 # JSON analysis
 
 # ─────────────────────────────────────────────
@@ -43,34 +43,6 @@ You are STS Coder, an expert IBM z/TPF RAVEN Automation Engineer, TPF Operations
 - ECB (Entry Control Block) is the core transaction context. CE1CR0 = input data.
 - Programs MUST be strictly reentrant. No self-modifying code.
 - REXX in z/TPF runs in RAVEN environment. First line: /* REXX */. Use ADDRESS RAVEN.
-
-## TDRV File Format (RAVEN Standard)
-* TDRV: <name>
-* PURPOSE: <description>
-* DATE: YYYY-MM-DD | AUTHOR: STS Coder AI
-*--------------------------------------------------------------
-* STEP 001: <description>
-SEND "<z-command>"
-WAIT 30
-EXPECT "*COMMAND COMPLETE*" PASS
-EXPECT "*ERROR*" FAIL
-*--------------------------------------------------------------
-* STEP 002: <description>
-SEND "<next-command>"
-WAIT 60
-EXPECT "*SUCCESS*" PASS
-EXPECT "*FAILED*" FAIL
-RETRY 3
-DELAY 10
-*--------------------------------------------------------------
-* RECOVERY SECTION
-SEND "<recovery-command>"
-WAIT 30
-EXPECT "*RECOVERED*" PASS
-*--------------------------------------------------------------
-* END OF TDRV
-
-Rules: Sequential SEND, WAIT for timeout, EXPECT with wildcards for PASS/FAIL, RETRY with DELAY.
 
 ## VAR File Format (Operations Server Standard)
 VARIATION_DESCRIPTION = "<description>"
@@ -111,11 +83,10 @@ DEPENDENCIES / EXCEPTIONS (with RC codes) / Z COMMANDS / REXX INTERFACE /
 RECOVERY FLOW / DEPLOYMENT INSTRUCTIONS / OPERATIONAL BEST PRACTICES
 
 ## Output Rules
-- Respond ONLY with the artifact (VAR/TDRV/TDR/REXX). No prose wrapper.
+- Respond ONLY with the artifact (VAR/TDR/REXX). No prose wrapper.
 - Use real IBM z/TPF macro names and Z-Commands only.
 - Include standard variables: ERR_CODE, RET_CODE, ECB_PTR.
 - Always include Z COMMANDS and RECOVERY sections in TDR.
-- TDRV must use SEND/WAIT/EXPECT/RETRY/DELAY format.
 - VAR must use VARIATION_DESCRIPTION/VARIATION_CMD/VARIATION/TRAP format.
 - REXX must use ADDRESS RAVEN and proper RC checking.
 """
@@ -132,7 +103,6 @@ Produce a JSON array of engineering recommendations. Each item:
 - SEND without EXPECT -> WARNING (unvalidated command execution)
 - Missing RETRY on critical commands -> WARNING
 - No TIMEOUT/WAIT specified -> WARNING
-- Missing recovery section in TDRV -> WARNING
 - TRAP without error pattern -> INFO
 - No REXX RC checking -> WARNING
 - ECB safety and PNR access protection
@@ -199,14 +169,25 @@ def _call_ollama(model: str, system: str, user_prompt: str, temperature: float =
         )
 
 
+_ollama_status_cache = None
+_ollama_cache_time = 0.0
+
 def is_ollama_available() -> bool:
-    """Quick health check — returns True if Ollama is reachable."""
+    """Quick health check — returns True if Ollama is reachable (cached for 10s)."""
+    global _ollama_status_cache, _ollama_cache_time
+    import time
+    now = time.time()
+    if _ollama_status_cache is not None and (now - _ollama_cache_time) < 10.0:
+        return _ollama_status_cache
     try:
-        with httpx.Client(timeout=5) as client:
+        with httpx.Client(timeout=2) as client:
             r = client.get(f"{OLLAMA_BASE}/api/tags")
-            return r.status_code == 200
+            _ollama_status_cache = (r.status_code == 200)
     except Exception:
-        return False
+        _ollama_status_cache = False
+    _ollama_cache_time = now
+    return _ollama_status_cache
+
 
 
 def list_available_models() -> list[str]:
@@ -286,6 +267,16 @@ def explain_z_command_stream(command: str):
         yield from stream_text_chunks(format_zcmd_explanation(command, detail))
         return
 
+    if not is_ollama_available():
+        yield from stream_text_chunks(
+            f"**Command:** {base_cmd}\n"
+            f"**Purpose:** IBM z/TPF Operator Command `{command}`\n"
+            f"**Status:** Offline Knowledge Base Mode (Ollama Offline)\n\n"
+            f"**Description:** Z-Command `{command}` requested. Ollama AI model is offline, but built-in static Knowledge Base is active.\n\n"
+            f"**Available Built-in Z-Commands:** ZDSYS, ZDECB, ZSTAT, ZECB, ZTRAP, ZDUMP, ZPROG, ZLOG, ZTPFDF, ZFILE, ZPOOL, ZOSRV."
+        )
+        return
+
     prompt = (
         f"Explain the IBM z/TPF operator command: {command}\n"
         f"Format: **Command:** <name>\n**Purpose:** <purpose>\n"
@@ -293,6 +284,7 @@ def explain_z_command_stream(command: str):
         f"**Expected Response:** <typical console output>\n**Example:** <usage>"
     )
     yield from stream_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.1, num_predict=300)
+
 
 
 def chat_stream(query: str):
@@ -361,7 +353,7 @@ def chat_stream(query: str):
         else:
             yield from stream_text_chunks(
                 "Ollama is offline. Try a specific Z-Command (e.g. ZDSYS, ZDECB, ZOSRV) "
-                "or ask about VAR, TDR, TDRV, REXX, or TOS automation."
+                "or ask about VAR, TDR, REXX, or TOS automation."
             )
         return
 
@@ -382,7 +374,7 @@ def chat_stream(query: str):
 
 # ─────────────────────────────────────────────
 # CODER FUNCTIONS (Qwen2.5-Coder)
-# IBM REXX / RAVEN, VAR, TDRV, TDR
+# IBM REXX / RAVEN, VAR, TDR
 # ─────────────────────────────────────────────
 
 def generate_var_llm(parsed_summary: dict) -> str:
@@ -453,56 +445,7 @@ def generate_var_llm(parsed_summary: dict) -> str:
     return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.05)
 
 
-def generate_tdrv_llm(parsed_summary: dict, var_output: Optional[str] = None) -> str:
-    """Generate a full IBM z/TPF TDRV (Test Driver) file with fixed-width step format."""
-    entry = parsed_summary.get('entry_name', 'TRXXX')
-    macros = _macros_from_summary(parsed_summary)
-    has_file = any(m in macros for m in ['FINDA','FILEC','FIWHC'])
-    has_storage = 'GETCC' in macros
-
-    prompt = f"""Generate a complete IBM z/TPF RAVEN TDRV (Test Driver) file for entry {entry}.
-
-Entry Analysis:
-{json.dumps(parsed_summary, indent=2)}
-
-Required RAVEN TDRV format:
-* TDRV: {entry}
-* PURPOSE: Automation test driver for {entry}
-* DATE: 2026-05-20 | AUTHOR: STS Coder AI
-*--------------------------------------------------------------
-* STEP 001: Entry initialization and system check
-SEND "ZPROG DISPLAY {entry}"
-WAIT 30
-EXPECT "*LOADED*" PASS
-EXPECT "*NOT FOUND*" FAIL
-*--------------------------------------------------------------
-* STEP 002: Input validation
-SEND "ZSTAT ALL"
-WAIT 30
-EXPECT "*ACTIVE*" PASS
-EXPECT "*ERROR*" FAIL
-{'*--------------------------------------------------------------' + chr(10) + '* STEP 003: Storage verification' + chr(10) + 'SEND "ZPOOL DISPLAY"' + chr(10) + 'WAIT 30' + chr(10) + 'EXPECT "*AVAILABLE*" PASS' + chr(10) + 'EXPECT "*DEPLETED*" FAIL' + chr(10) + 'RETRY 3' + chr(10) + 'DELAY 5' if has_storage else ''}
-{'*--------------------------------------------------------------' + chr(10) + '* STEP: File system access' + chr(10) + 'SEND "ZFILE STATUS"' + chr(10) + 'WAIT 60' + chr(10) + 'EXPECT "*OPEN*" PASS' + chr(10) + 'EXPECT "*CLOSED*" FAIL' + chr(10) + 'EXPECT "*LOCKED*" FAIL' + chr(10) + 'RETRY 2' + chr(10) + 'DELAY 10' if has_file else ''}
-
-Add additional steps for:
-- Data processing and transformation
-- Output formatting and validation
-- Error handling with recovery commands
-- Final status check
-
-Rules:
-- Use SEND/WAIT/EXPECT/RETRY/DELAY format
-- EXPECT patterns use wildcards (*) for matching
-- Every SEND must have EXPECT PASS and EXPECT FAIL
-- Include RETRY and DELAY for critical operations
-- Include RECOVERY section at end
-- Include * END OF TDRV marker
-Output ONLY the TDRV file."""
-    return _call_ollama(CODER_MODEL, CODER_SYSTEM, prompt, temperature=0.05)
-
-
-def generate_tdr_llm(parsed_summary: dict, var_output: Optional[str] = None,
-                     tdrv_output: Optional[str] = None) -> str:
+def generate_tdr_llm(parsed_summary: dict, var_output: Optional[str] = None) -> str:
     """Generate a full IBM z/TPF TDR (Transaction Design Record) document."""
     entry = parsed_summary.get('entry_name', 'TRXXX')
     macros = _macros_from_summary(parsed_summary)
@@ -647,6 +590,15 @@ def explain_z_command_llm(command: str) -> str:
     if detail:
         return format_zcmd_explanation(command, detail)
 
+    if not is_ollama_available():
+        return (
+            f"**Command:** {base_cmd}\n"
+            f"**Purpose:** IBM z/TPF Operator Command `{command}`\n"
+            f"**Status:** Offline Knowledge Base Mode (Ollama Offline)\n\n"
+            f"**Description:** Z-Command `{command}` requested. Ollama AI model is offline, but built-in static Knowledge Base is active.\n\n"
+            f"**Available Built-in Z-Commands:** ZDSYS, ZDECB, ZSTAT, ZECB, ZTRAP, ZDUMP, ZPROG, ZLOG, ZTPFDF, ZFILE, ZPOOL, ZOSRV."
+        )
+
     prompt = f"""Explain this IBM z/TPF Z Command.
 Command: {command}
 
@@ -745,7 +697,6 @@ Respond ONLY with valid JSON.
 def generate_recommendations_llm(
     parsed_summary: dict,
     var_output: Optional[str] = None,
-    tdrv_output: Optional[str] = None,
     TDR_output: Optional[str] = None,
     coder_analysis: Optional[dict] = None,
 ) -> list[dict]:
@@ -760,9 +711,6 @@ def generate_recommendations_llm(
 
     if var_output:
         context_parts.append(f"\nGenerated VAR File (excerpt):\n{var_output[:500]}")
-
-    if tdrv_output:
-        context_parts.append(f"\nGenerated TDRV File (excerpt):\n{tdrv_output[:500]}")
 
     if TDR_output:
         context_parts.append(f"\nGenerated TDR File (excerpt):\n{TDR_output[:500]}")
@@ -845,7 +793,7 @@ def run_full_pipeline_llm(raw_text: str, parsed_summary: dict) -> dict:
     with ThreadPoolExecutor(max_workers=4) as executor:
         f_analysis = executor.submit(safe_run, analyze_entry_llm, raw_text, parsed_summary)
         f_var      = executor.submit(safe_run, generate_var_llm, parsed_summary)
-        f_tdr      = executor.submit(safe_run, generate_tdr_llm, parsed_summary, None, None)
+        f_tdr      = executor.submit(safe_run, generate_tdr_llm, parsed_summary, None)
         f_rexx     = executor.submit(safe_run, generate_rexx_llm, parsed_summary)
         
         res_analysis = f_analysis.result()
@@ -878,7 +826,6 @@ def run_full_pipeline_llm(raw_text: str, parsed_summary: dict) -> dict:
         result["recommendations"] = generate_recommendations_llm(
             parsed_summary,
             var_output=result["var_file"] or None,
-            tdrv_output=None,
             TDR_output=result["tdr_file"] or None,
             coder_analysis=result["analysis"] or None,
         )

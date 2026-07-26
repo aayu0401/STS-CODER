@@ -291,7 +291,7 @@
       evtSource.onerror = () => {
         evtSource.close();
         if (!accumulated) {
-          contentEl.innerHTML = '\u26a0 Could not reach AI server. Check Ollama is running at localhost:11434.';
+          contentEl.innerHTML = '\u26a0 Could not reach STS Coder API server. Ensure Python backend is running at http://localhost:8100.';
         } else {
           contentEl.innerHTML = esc(accumulated)
             .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
@@ -605,7 +605,24 @@
 
   function renderFallback(p, raw) {
     if (mode === 'ZCMD') {
-      $('#result-zcmd').innerHTML = '<div class="result-section"><div class="result-section-title">ZTPF Z Command Explanation (Local)</div><div class="zcmd-block"><pre>Cannot explain Z-Command without AI model connectivity. Ensure Ollama is running.\n\nCommand requested: ' + esc(raw) + '</pre></div></div>';
+      const baseCmd = raw.trim().split(/\s+/)[0].toUpperCase();
+      const zcmdKB = {
+        'ZDSYS': 'Display System Status — CPU utilization, MDB state, cross-processor communication metrics.',
+        'ZDECB': 'Display ECB Data Levels — Dumps ECB data levels (D0-DF), registers, PSW for debugging.',
+        'ZSTAT': 'System Statistics — Real-time z/TPF performance metrics, ECB utilization, pool status.',
+        'ZECB':  'ECB Control and Display — Display or alter active Entry Control Blocks.',
+        'ZTRAP': 'Diagnostic Software Trap — Intercept program execution at specified offset.',
+        'ZDUMP': 'Memory Dump — Take system memory dump of specified address range or ECB.',
+        'ZPROG': 'Program Load Display — Check load status, CSECT address, and segment version.',
+        'ZLOG':  'Console Log Control — Display, filter, or export system log messages.',
+        'ZTPFDF':'TPF Database Facility — Monitor database files, subfiles, and index structure.',
+        'ZFILE': 'File System Control — File system status, record holds, and pool block usage.',
+        'ZPOOL': 'Pool Storage Status — Display available and in-use pool core blocks.',
+        'ZOSRV': 'Operations Server Status — Check TOS / RAVEN automation service state.'
+      };
+      const desc = zcmdKB[baseCmd] || 'z/TPF Operator Command ' + baseCmd + ' (Local Knowledge Base Mode)';
+      const out = '**Command:** ' + baseCmd + '\n**Purpose:** ' + desc + '\n**Mode:** Built-in Knowledge Base (Ollama Offline)\n\nNote: Running without local Ollama AI model. Full Z-Command static definitions are active.';
+      $('#result-zcmd').innerHTML = '<div class="result-section"><div class="result-section-title">ZTPF Z Command Explanation (Knowledge Base)</div><div class="zcmd-block"><pre>' + esc(out) + '</pre></div></div>';
       return;
     }
 

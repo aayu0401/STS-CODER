@@ -1121,6 +1121,14 @@ FEATURE_PATTERNS = {
     "has_fiwhc":           r"\bFIWHC\b",
     "has_unfrc":           r"\bUNFRC\b",
     "has_rexx":            r"ADDRESS\s+RAVEN|PARSE\s+ARG|SAY\s+|CALL_RESULT",
+    "has_critical_op":     r"\b(?:ZSTOP|ZSHUT|ZFCRZ|ZIPL|ZRSRT|ZDUPD|ZRSRT|HARD)\b",
+    "has_database_op":     r"\b(?:ZTPFDF|ZFILE|ZPOOL|ZVOL|ZVAL|DBDEF|LREC)\b",
+    "has_network_op":      r"\b(?:ZINET|ZDTCP|ZCONN|ZPING|ZLSA|ZNSDM|SOCKET|DAEMON)\b",
+    "has_diagnostic_op":   r"\b(?:ZDBUG|ZCDSP|ZDECB|ZDUMP|ZTRAP|ZERR|ZLOG|TRACE|SNAP|PSW)\b",
+    "has_security_op":     r"\b(?:ZKEY|ZNKEY|ZPWB|PASSWORD|ENCRYPTION)\b",
+    "has_system_op":       r"\b(?:ZDSYS|ZSTAT|ZINFO|ZOPTS|ZONLN|ZATIM|ZDTIM|ZPROG)\b",
+    "has_messaging_op":    r"\b(?:ZMQSC|ZMAIL|ZMTA|ZAWFS|MQSERIES|QUEUE|CHANNEL)\b",
+    "has_storage_op":      r"\b(?:ZALOC|ZASER|ZCOMP|ZDSK|ZMOD|ZPATH|ZTAPE|ZTMON|VOLUME|DASD)\b",
 }
 
 ENTRY_TYPES = [

@@ -74,7 +74,7 @@ app = FastAPI(
     title="STS Coder API",
     description=(
         "Travelport Smart TPF System Coder — IBM z/TPF Engineering Copilot.\n\n"
-        "**Qwen2.5-Coder** handles IBM REXX, VAR, TDRV, TDR generation.\n"
+        "**Qwen2.5-Coder** handles IBM REXX, VAR, TDR generation.\n"
         "**Llama 3.3** provides engineering recommendations.\n"
         "Reinforcement feedback loop: coder outputs inform advisor analysis."
     ),
@@ -136,7 +136,7 @@ class TPFEntryRequest(BaseModel):
     raw_text: str = Field(..., min_length=1, description="Raw TPF assembly / REXX / description text")
     entry_name: str = Field("", description="Optional entry name override")
     segment: str = Field("", description="Optional segment name")
-    mode: str = Field("FULL", description="Output mode: ANALYZE, VAR, TDRV, TDR, REXX, FULL")
+    mode: str = Field("FULL", description="Output mode: ANALYZE, VAR, TDR, REXX, FULL")
     use_llm: bool = Field(True, description="Use Ollama LLM (falls back to static if unavailable)")
 
 
@@ -284,30 +284,31 @@ def static_check(req: TPFEntryRequest):
     code = req.raw_text or ""
     issues = []
     lines = code.splitlines()
+    import re
 
-    # Rule 1: FIWHC without UNFRC
+    # Rule 1: FIWHC without hold release (UNFRC, FILEC, FILNC, FILUC)
     fiwhc_count = sum(1 for l in lines if "FIWHC" in l.upper() and not l.strip().startswith("*"))
-    unfrc_count  = sum(1 for l in lines if "UNFRC" in l.upper() and not l.strip().startswith("*"))
-    if fiwhc_count > 0 and unfrc_count == 0:
-        issues.append({"severity": "ERROR", "rule": "FIWHC_NO_UNFRC",
-            "message": f"FIWHC found ({fiwhc_count}x) but no UNFRC detected. File lock never released — will cause ECB deadlock.",
-            "fix": "Add UNFRC before every EXITC and EXITN path."})
-    elif fiwhc_count > unfrc_count:
-        issues.append({"severity": "WARNING", "rule": "FIWHC_UNFRC_MISMATCH",
-            "message": f"FIWHC count ({fiwhc_count}) exceeds UNFRC count ({unfrc_count}). Possible lock leak on error path.",
-            "fix": "Ensure every error exit path also calls UNFRC."})
+    release_hold_count = sum(1 for l in lines if any(m in l.upper() for m in ["UNFRC", "FILEC", "FILNC", "FILUC"]) and not l.strip().startswith("*"))
+    if fiwhc_count > 0 and release_hold_count == 0:
+        issues.append({"severity": "ERROR", "rule": "FIWHC_NO_RELEASE",
+            "message": f"FIWHC found ({fiwhc_count}x) but no release macro (UNFRC/FILEC/FILNC/FILUC) detected. File lock never released — will cause ECB deadlock.",
+            "fix": "Add UNFRC, FILEC, FILNC, or FILUC before every EXITC and EXITN path."})
+    elif fiwhc_count > release_hold_count:
+        issues.append({"severity": "WARNING", "rule": "FIWHC_RELEASE_MISMATCH",
+            "message": f"FIWHC count ({fiwhc_count}) exceeds release macro count ({release_hold_count}). Possible lock leak on error path.",
+            "fix": "Ensure every error exit path also releases held file records."})
 
-    # Rule 2: GETCC without RELCC
+    # Rule 2: GETCC without storage release (RELCC, FILEC, FILEA, FILUC)
     getcc_count = sum(1 for l in lines if "GETCC" in l.upper() and not l.strip().startswith("*"))
-    relcc_count = sum(1 for l in lines if "RELCC" in l.upper() and not l.strip().startswith("*"))
-    if getcc_count > 0 and relcc_count == 0:
-        issues.append({"severity": "WARNING", "rule": "GETCC_NO_RELCC",
-            "message": f"GETCC found ({getcc_count}x) but no RELCC detected. Storage leak — core blocks never freed.",
-            "fix": "Add RELCC before every EXITC and EXITN path."})
-    elif getcc_count > relcc_count:
-        issues.append({"severity": "WARNING", "rule": "GETCC_RELCC_MISMATCH",
-            "message": f"GETCC count ({getcc_count}) exceeds RELCC count ({relcc_count}). Storage may leak on error paths.",
-            "fix": "Ensure every error exit path also calls RELCC."})
+    release_core_count = sum(1 for l in lines if any(m in l.upper() for m in ["RELCC", "FILEC", "FILEA", "FILUC"]) and not l.strip().startswith("*"))
+    if getcc_count > 0 and release_core_count == 0:
+        issues.append({"severity": "WARNING", "rule": "GETCC_NO_RELEASE",
+            "message": f"GETCC found ({getcc_count}x) but no release macro (RELCC/FILEC/FILEA/FILUC) detected. Storage leak — core blocks never freed.",
+            "fix": "Add RELCC, FILEC, FILEA, or FILUC before exit."})
+    elif getcc_count > release_core_count:
+        issues.append({"severity": "WARNING", "rule": "GETCC_RELEASE_MISMATCH",
+            "message": f"GETCC count ({getcc_count}) exceeds release macro count ({release_core_count}). Storage may leak on error paths.",
+            "fix": "Ensure every error exit path also releases core blocks."})
 
     # Rule 3: EXITC without EXITN (no error path)
     has_exitc = any("EXITC" in l.upper() for l in lines if not l.strip().startswith("*"))
@@ -317,13 +318,12 @@ def static_check(req: TPFEntryRequest):
             "message": "EXITC found but no EXITN. No error termination path defined.",
             "fix": "Add EXITN as the termination macro for all error paths."})
 
-    # Rule 4: ENTER without BACKC
-    enter_count = sum(1 for l in lines if l.upper().strip().startswith("ENTER") and not l.strip().startswith("*"))
-    backc_count = sum(1 for l in lines if "BACKC" in l.upper() and not l.strip().startswith("*"))
-    if enter_count > 0 and backc_count == 0:
-        issues.append({"severity": "INFO", "rule": "ENTER_NO_BACKC",
-            "message": f"ENTER found ({enter_count}x) but no BACKC. If any entry uses BACKC to return, the caller must be prepared.",
-            "fix": "Ensure calling entry handles return via BACKC correctly."})
+    # Rule 4: Subroutine return consistency
+    has_backc = any("BACKC" in l.upper() for l in lines if not l.strip().startswith("*"))
+    if has_backc and has_exitc:
+        issues.append({"severity": "INFO", "rule": "BACKC_EXITC_MIX",
+            "message": "Both BACKC (subroutine return) and EXITC (ECB termination) detected in the same program.",
+            "fix": "Use BACKC for normal subroutine returns, and reserve EXITC for ECB-level termination paths."})
 
     # Rule 5: Check for self-modification patterns (non-reentrant)
     if "MVC" in code.upper() and any(kw in code.upper() for kw in ["CSECT", "DSECT"]):
@@ -335,10 +335,54 @@ def static_check(req: TPFEntryRequest):
 
     # Rule 6: FINDA without error check hint
     finda_count = sum(1 for l in lines if "FINDA" in l.upper() and not l.strip().startswith("*"))
-    if finda_count > 0 and issues == []:
+    if finda_count > 0:
+        # Check if condition code is tested or branches exist near FINDA
         issues.append({"severity": "INFO", "rule": "FINDA_RC_CHECK",
             "message": f"FINDA used ({finda_count}x). Ensure return code is checked (RC=4 = not found, RC=8 = I/O error).",
             "fix": "Test condition code after FINDA: BZ (record found), BNZ (not found / error)."})
+
+    # Rule 7: Register R8 Modification (ECB Pointer)
+    r8_modified = False
+    for l in lines:
+        if l.strip().startswith("*"):
+            continue
+        # Match instructions modifying R8 directly as destination
+        if re.search(r"\b(L|LA|LR|SR|AR|S|A|AL|ALR|SL|SLR|CVB|CVD|LNR|LPR|LCR|LTR)\s+R8\b", l.upper()):
+            r8_modified = True
+            break
+        # Check LM wrap-around loads
+        lm_match = re.search(r"\b(LM)\s+(\w+)\s*,\s*(\w+)", l.upper())
+        if lm_match:
+            try:
+                def get_reg_num(r):
+                    r = r.strip()
+                    if r.startswith("R"):
+                        return int(r[1:])
+                    return int(r)
+                r_start = get_reg_num(lm_match.group(2))
+                r_end = get_reg_num(lm_match.group(3))
+                if r_start <= r_end:
+                    if r_start <= 8 <= r_end:
+                        r8_modified = True
+                        break
+                else:
+                    if 8 >= r_start or 8 <= r_end:
+                        r8_modified = True
+                        break
+            except Exception:
+                pass
+    if r8_modified:
+        issues.append({"severity": "ERROR", "rule": "R8_MODIFICATION",
+            "message": "Modification of register R8 detected. Register R8 is reserved as the ECB pointer in z/TPF and must not be altered.",
+            "fix": "Use registers R0-R7 or R10-R15 for general operations."})
+
+    # Rule 8: File Lock held across Defer/Wait (Deadlock Risk)
+    has_fiwhc = any("FIWHC" in l.upper() for l in lines if not l.strip().startswith("*"))
+    has_defer = any(any(d in l.upper() for d in ["DLAYC", "DEFRC", "WTOPC", "WAITC"]) for l in lines if not l.strip().startswith("*"))
+    if has_fiwhc and has_defer:
+        issues.append({"severity": "WARNING", "rule": "LOCK_ACROSS_DEFER",
+            "message": "File lock (FIWHC) held while calling a defer/wait macro (DLAYC/DEFRC/WTOPC/WAITC). Holding database locks across defers can lead to severe ECB resource deadlocks.",
+            "fix": "Release the lock using UNFRC or file/unhold the record before executing the defer macro."})
 
     if not issues:
         issues.append({"severity": "OK", "rule": "CLEAN",
@@ -629,7 +673,7 @@ def chat_only(req: TPFEntryRequest):
 
 {query}
 
-Use your knowledge of IBM z/TPF, Z-Commands, REXX, VAR, TDRV, TDR and TPF assembler."""
+Use your knowledge of IBM z/TPF, Z-Commands, REXX, VAR, TDR and TPF assembler."""
         output = _call_ollama(ADVISOR_MODEL, CHAT_SYSTEM, prompt, temperature=0.4)
         
         return GenerateResponse(
@@ -779,6 +823,14 @@ async def startup():
             print("  ML models trained successfully.")
         except Exception as e:
             print(f"  [WARN] ML auto-train skipped: {e}")
+    else:
+        try:
+            from training.train_model import _load_models
+            import threading
+            threading.Thread(target=_load_models, name="STS-ModelLoader", daemon=True).start()
+            print("  ML models loading in background...")
+        except Exception as e:
+            print(f"  [WARN] Failed to start background model load: {e}")
     print("=" * 60)
 
 

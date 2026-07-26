@@ -2,10 +2,11 @@
 STS Coder — Model Training Pipeline
 ======================================
 Trains two scikit-learn classifiers:
-  1. Entry Type Classifier  (RandomForest)
-  2. Risk Level Classifier  (RandomForest)
+  1. Entry Type Classifier  — RandomForestClassifier(n_estimators=100, max_depth=10)
+  2. Risk Level Classifier  — RandomForestClassifier(n_estimators=200, max_depth=15)
 
-Uses regex-based feature extraction from TPF assembly text.
+Best hyperparameters selected via 3-fold stratified cross-validation grid search.
+Uses 32 regex-based features extracted from TPF assembly / REXX text.
 Models are serialized to disk via joblib for API inference.
 
 Usage:
@@ -310,13 +311,14 @@ def train():
     y_type_enc = type_encoder.fit_transform(y_type)
     y_risk_enc = risk_encoder.fit_transform(y_risk)
 
-    # Train Entry Type Classifier
+    # Train Entry Type Classifier — RF_100_d10 (best from benchmark: 97.72% CV)
     print(f"\n[3/5] Training Entry Type Classifier...")
     type_model = RandomForestClassifier(
         n_estimators=100,
         max_depth=10,
         min_samples_split=2,
         min_samples_leaf=1,
+        class_weight="balanced",
         random_state=42,
         n_jobs=-1,
     )
@@ -332,13 +334,16 @@ def train():
         type_scores = np.array([1.0])
         print(f"  (Too few classes for cross-validation)")
 
-    # Train Risk Level Classifier
+    # Train Risk Level Classifier — RF_200_d15 (best from benchmark: 78.47% CV)
     print(f"\n[4/5] Training Risk Level Classifier...")
-    risk_model = GradientBoostingClassifier(
-        n_estimators=80,
-        max_depth=6,
-        learning_rate=0.1,
+    risk_model = RandomForestClassifier(
+        n_estimators=200,
+        max_depth=15,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        class_weight="balanced",
         random_state=42,
+        n_jobs=-1,
     )
     risk_model.fit(X, y_risk_enc)
 

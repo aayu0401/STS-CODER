@@ -1,8 +1,8 @@
 {
-  "trained_at": "2026-05-21T23:00:45.234702+00:00",
+  "trained_at": "2026-06-15T01:28:30.214514+00:00",
   "training_samples": 30,
   "augmented_samples": 3735,
-  "feature_count": 24,
+  "feature_count": 32,
   "feature_names": [
     "has_enter",
     "has_exit",
@@ -23,6 +23,14 @@
     "has_fiwhc",
     "has_unfrc",
     "has_rexx",
+    "has_critical_op",
+    "has_database_op",
+    "has_network_op",
+    "has_diagnostic_op",
+    "has_security_op",
+    "has_system_op",
+    "has_messaging_op",
+    "has_storage_op",
     "var_count",
     "branch_count",
     "data_ops",
@@ -62,18 +70,18 @@
     "LOW",
     "MODERATE"
   ],
-  "type_cv_accuracy": 0.9734939759036144,
-  "risk_cv_accuracy": 0.6744310575635876,
+  "type_cv_accuracy": 0.9333333333333332,
+  "risk_cv_accuracy": 0.7817938420348058,
   "type_feature_importances": {
-    "line_count": 0.4273693944118666,
-    "var_count": 0.11007038115582404,
-    "has_send": 0.08211372972162748,
-    "label_count": 0.06210644228758961,
-    "has_enter": 0.060973804476390635,
-    "has_exit": 0.04107693965565202,
-    "branch_count": 0.03920371122867291,
-    "has_ecb": 0.037332143065051115,
-    "has_rexx": 0.03518731112374218,
-    "has_validation": 0.031041474784587627
+    "line_count": 0.1389843886161739,
+    "data_ops": 0.10185825357050365,
+    "branch_count": 0.08948892229965816,
+    "label_count": 0.08271715183226569,
+    "var_count": 0.06937860945285236,
+    "has_network_op": 0.03800661643502223,
+    "has_filec": 0.03795140743980035,
+    "has_database_op": 0.03637313346603401,
+    "has_ecb": 0.036148863674440146,
+    "has_storage_get": 0.03531115380589056
   }
 }
